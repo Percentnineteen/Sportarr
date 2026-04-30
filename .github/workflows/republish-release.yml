@@ -1,0 +1,220 @@
+name: Republish Release Artifacts
+
+# Manual workflow to re-fire the post-release steps (Windows installer +
+# Discord notification) for an existing release. Useful when the main
+# release.yml job partially fails — e.g. the Trivy SARIF upload errors and
+# cascades into the success-gated Discord/Windows-installer steps being
+# skipped, even though the GitHub release itself published cleanly.
+#
+# Usage (CLI):
+#   gh workflow run republish-release.yml \
+#     -f tag=v4.0.996.1075 \
+#     -f source_run_id=25142363101 \
+#     -f base_version=4.0.996
+#
+# Where:
+#   tag            = The release tag to operate on (e.g. v4.0.996.1075)
+#   source_run_id  = The original release.yml run ID — needed because the
+#                    Windows installer downloads build artifacts uploaded
+#                    by that run's build-and-release job
+#   base_version   = The 3-part version (e.g. 4.0.996), used in compare-URL
+#                    bookkeeping; defaults to tag minus the build suffix
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v4.0.996.1075)'
+        required: true
+        type: string
+      source_run_id:
+        description: 'Original release.yml run ID for artifact download'
+        required: true
+        type: string
+      base_version:
+        description: '3-part version, e.g. 4.0.996 (used in Trivy category / compare URL fallback)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Compute version_number from tag
+        id: ver
+        shell: pwsh
+        run: |
+          # Strip leading 'v' from tag → 4.0.996.1075
+          $version_number = "${{ inputs.tag }}".TrimStart('v')
+          Write-Host "version_number=$version_number"
+          "version_number=$version_number" >> $env:GITHUB_OUTPUT
+
+      - name: Download Windows build artifact from original run
+        uses: actions/download-artifact@v4
+        with:
+          name: win-x64-build
+          path: publish/win-x64
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download installer assets from original run
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-assets
+          path: .
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create ICO file from PNG
+        shell: pwsh
+        run: |
+          choco install imagemagick -y --no-progress
+          refreshenv
+          $env:Path = "C:\Program Files\ImageMagick-7.1.1-Q16-HDRI;$env:Path"
+          magick Logo/256.png Logo/128.png Logo/64.png Logo/48.png Logo/32.png Logo/16.png Logo/sportarr.ico
+          Write-Host "Created sportarr.ico"
+          Get-Item Logo/sportarr.ico
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          Write-Host "Inno Setup installed"
+
+      - name: Build Windows Installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version_number }}"
+          Write-Host "Building installer for version: $version"
+          New-Item -ItemType Directory -Force -Path installer-output
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version installer/sportarr.iss
+          Write-Host "Installer built successfully"
+          Get-ChildItem installer-output/
+
+      - name: Upload installer to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            installer-output/Sportarr-Setup-${{ steps.ver.outputs.version_number }}.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  discord-notification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve previous tag and compose Discord payload
+        id: compose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          BASE_VERSION_INPUT="${{ inputs.base_version }}"
+
+          # Default base_version to tag's first three numeric segments after 'v'.
+          if [ -z "$BASE_VERSION_INPUT" ]; then
+            stripped="${TAG#v}"
+            BASE_VERSION=$(echo "$stripped" | awk -F. '{print $1"."$2"."$3}')
+          else
+            BASE_VERSION="$BASE_VERSION_INPUT"
+          fi
+          echo "base_version=$BASE_VERSION"
+
+          # Find the previous 4-part tag, excluding the current one. Same
+          # logic as release.yml's changelog step.
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | head -1)
+          echo "previous_tag=${PREVIOUS_TAG:-(none)}"
+
+          REPO_URL="https://github.com/${{ github.repository }}"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            COMPARE_URL="${REPO_URL}/compare/${PREVIOUS_TAG}...${TAG}"
+          else
+            COMPARE_URL="${REPO_URL}/commits/${TAG}"
+          fi
+          echo "compare_url=${COMPARE_URL}"
+
+          # Pull the live release body from the GitHub release page so the
+          # embed mirrors what users see on the release.
+          gh release view "$TAG" --json body --jq '.body' > release_body.md
+          echo "Fetched release body, $(wc -l < release_body.md) lines"
+
+          {
+            echo "tag=$TAG"
+            echo "base_version=$BASE_VERSION"
+            echo "previous_tag=$PREVIOUS_TAG"
+            echo "compare_url=$COMPARE_URL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Discord notification
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          VERSION: ${{ steps.compose.outputs.tag }}
+          BASE_VERSION: ${{ steps.compose.outputs.base_version }}
+          PREVIOUS_TAG: ${{ steps.compose.outputs.previous_tag }}
+          COMPARE_URL: ${{ steps.compose.outputs.compare_url }}
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.compose.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Same shape as release.yml's Discord step: render Markdown ###
+          # headings as bold and drop the "Full Changelog" line (we add a
+          # labeled "Compare Changes" link below).
+          RELEASE_SUMMARY=$(python3 -c "
+          lines = open('release_body.md').read().strip().split('\n')
+          out = []
+          for line in lines:
+            if line.startswith('**Full Changelog**'):
+              continue
+            if line.startswith('### '):
+              out.append('**' + line[4:] + '**')
+            elif line.strip():
+              out.append(line)
+          print('\n'.join(out[:20]))
+          ")
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            CHANGELOG_SECTION="**Compare Changes**
+          [\`${PREVIOUS_TAG}\` → \`${VERSION}\`](${COMPARE_URL})"
+          else
+            CHANGELOG_SECTION="**Compare Changes**
+          [View all commits](${COMPARE_URL})"
+          fi
+
+          DESCRIPTION="${RELEASE_SUMMARY}
+
+          ${CHANGELOG_SECTION}
+
+          **Docker Installation**
+          \`\`\`
+          docker pull sportarr/sportarr:latest
+          docker pull sportarr/sportarr:${VERSION_NUMBER}
+          \`\`\`
+
+          **Downloads**
+          [View all platform downloads](${RELEASE_URL})"
+
+          PAYLOAD=$(jq -n \
+            --arg title "New Release - ${VERSION}" \
+            --arg desc "$DESCRIPTION" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            '{username: "Sportarr", embeds: [{title: $title, description: $desc, color: 14427686, timestamp: $ts}]}')
+
+          curl -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
