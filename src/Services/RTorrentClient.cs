@@ -33,9 +33,14 @@ public class RTorrentClient
         {
             if (_customHttpClient == null)
             {
-                var handler = new HttpClientHandler
+                var handler = new SocketsHttpHandler
                 {
-                    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                    SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
+                    }
                 };
                 _customHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(100) };
             }
@@ -75,9 +80,8 @@ public class RTorrentClient
     }
 
     /// <summary>
-    /// Add torrent from URL
-    /// NOTE: Does NOT specify directory - rTorrent uses its own configured directory
-    /// This matches Sonarr/Radarr behavior
+    /// Add torrent from URL.
+    /// NOTE: Does NOT specify directory — rTorrent uses its own configured directory.
     /// </summary>
     public async Task<string?> AddTorrentAsync(DownloadClient config, string torrentUrl, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
     {
@@ -85,7 +89,7 @@ public class RTorrentClient
         {
             ConfigureClient(config);
             // Note: rTorrent doesn't support per-torrent seed limits via XML-RPC at add time
-            // Seed limit checking is handled during download monitoring (matches Sonarr behavior)
+            // Seed limit checking is handled during download monitoring instead.
 
             // Handle initial state (Started, ForceStarted, Stopped)
             // load.start = add and start, load.normal = add without starting
@@ -200,6 +204,71 @@ public class RTorrentClient
     public async Task<bool> ResumeTorrentAsync(DownloadClient config, string hash)
     {
         return await StartTorrentAsync(config, hash);
+    }
+
+    /// <summary>
+    /// List all torrents matching a category (rTorrent label / custom1) for external download detection.
+    /// rTorrent has no native category concept; Sportarr maps "category" to the d.custom1 label.
+    /// Falls back to filtering by directory if no torrents match by label.
+    /// </summary>
+    public async Task<List<ExternalDownloadInfo>> GetAllDownloadsByCategoryAsync(DownloadClient config, string category)
+    {
+        var results = new List<ExternalDownloadInfo>();
+
+        try
+        {
+            var torrents = await GetTorrentsAsync(config);
+            if (torrents == null) return results;
+
+            var filterDir = config.Directory;
+
+            foreach (var torrent in torrents)
+            {
+                // Match by label first (the rTorrent equivalent of qBittorrent's category).
+                // If the user hasn't been setting labels, fall back to directory matching like Transmission does.
+                var labelMatches = !string.IsNullOrEmpty(torrent.Label) &&
+                                    torrent.Label.Equals(category, StringComparison.OrdinalIgnoreCase);
+                var dirMatches = !string.IsNullOrWhiteSpace(filterDir) &&
+                                  torrent.Directory.StartsWith(filterDir, StringComparison.OrdinalIgnoreCase);
+
+                if (!labelMatches && !dirMatches && (!string.IsNullOrEmpty(torrent.Label) || !string.IsNullOrWhiteSpace(filterDir)))
+                {
+                    // Either label or directory was set somewhere and didn't match → skip
+                    continue;
+                }
+
+                // State: 0=stopped, 1=started. CompletedBytes >= TotalSize means done.
+                var isCompleted = torrent.TotalSize > 0 && torrent.CompletedBytes >= torrent.TotalSize;
+
+                var savePath = !string.IsNullOrEmpty(torrent.Directory) && !string.IsNullOrEmpty(torrent.Name)
+                    ? System.IO.Path.Combine(torrent.Directory, torrent.Name)
+                    : torrent.Directory;
+
+                results.Add(new ExternalDownloadInfo
+                {
+                    DownloadId = torrent.Hash,
+                    Title = torrent.Name,
+                    Category = category,
+                    FilePath = savePath,
+                    Size = torrent.TotalSize,
+                    IsCompleted = isCompleted,
+                    Protocol = "Torrent",
+                    TorrentInfoHash = torrent.Hash,
+                    CompletedDate = torrent.TimeAdded > 0 && isCompleted
+                        ? DateTimeOffset.FromUnixTimeSeconds(torrent.TimeAdded).UtcDateTime
+                        : (DateTime?)null
+                });
+            }
+
+            _logger.LogDebug("[rTorrent] Found {Count} torrents matching label/directory '{Category}'",
+                results.Count, category);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[rTorrent] Error listing torrents by category");
+        }
+
+        return results;
     }
 
     /// <summary>
@@ -326,7 +395,7 @@ public class RTorrentClient
             if (!string.IsNullOrEmpty(_authCredentials))
                 requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Basic", _authCredentials);
 
-            var response = await client.SendAsync(requestMessage);
+            using var response = await client.SendAsync(requestMessage);
 
             if (response.IsSuccessStatusCode)
             {

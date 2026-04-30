@@ -4,8 +4,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Background service that automatically syncs events for all monitored leagues
-/// Runs periodically to discover new events from Sportarr API (similar to Sonarr's series refresh)
+/// Background service that automatically syncs events for all monitored
+/// leagues. Runs periodically to discover new events from Sportarr API.
 /// </summary>
 public class LeagueEventAutoSyncService : BackgroundService
 {

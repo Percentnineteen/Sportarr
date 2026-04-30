@@ -18,8 +18,8 @@ public enum DownloadClientType
 }
 
 /// <summary>
-/// Initial state for torrents when added to the download client
-/// Matches Sonarr/Radarr behavior for testing automation before going live
+/// Initial state for torrents when added to the download client.
+/// Useful for testing automation before going live.
 /// </summary>
 public enum TorrentInitialState
 {
@@ -54,8 +54,8 @@ public class DownloadClient
     public string? ApiKey { get; set; }
     public string? UrlBase { get; set; } // URL base path (e.g., "/sabnzbd" for SABnzbd, empty for root)
     public string Category { get; set; } = "sportarr";
-    public string? PostImportCategory { get; set; } // Category to move downloads to after import (Sonarr feature)
-    public string? Directory { get; set; } // Override download directory (like Sonarr/Radarr)
+    public string? PostImportCategory { get; set; } // Category to move downloads to after import
+    public string? Directory { get; set; } // Override download directory
     public bool UseSsl { get; set; }
     public bool DisableSslCertificateValidation { get; set; } = false; // Allow self-signed certificates (for local networks)
     public bool Enabled { get; set; } = true;
@@ -113,7 +113,7 @@ public class DownloadQueueItem
     public double Progress { get; set; } // 0-100
     public TimeSpan? TimeRemaining { get; set; }
     public string? ErrorMessage { get; set; }
-    public List<string> StatusMessages { get; set; } = new(); // Sonarr-style status messages (warnings, errors)
+    public List<string> StatusMessages { get; set; } = new(); // Status messages (warnings, errors)
     public DateTime Added { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
     public DateTime? ImportedAt { get; set; }
@@ -131,7 +131,7 @@ public class DownloadQueueItem
     /// Counter for tracking consecutive "not found" polls from download client.
     /// When download is removed from client externally (not through Sportarr),
     /// this counter increments. After 3 consecutive "not found" checks,
-    /// the queue item is auto-removed (Sonarr behavior).
+    /// the queue item is auto-removed.
     /// </summary>
     public int? MissingFromClientCount { get; set; } = 0;
 
@@ -152,7 +152,7 @@ public class DownloadQueueItem
     /// <summary>
     /// For pack downloads (like weekly packs), groups related queue items together.
     /// All events in the same pack share the same PackGroupId.
-    /// This enables Sonarr-style season pack behavior where all episodes appear in queue.
+    /// This enables season-pack behavior where all episodes appear in queue.
     /// </summary>
     public Guid? PackGroupId { get; set; }
 
@@ -194,7 +194,7 @@ public class Indexer
     public string? ApiKey { get; set; }
     public string ApiPath { get; set; } = "/api";
 
-    // Enable/Disable controls (matching Sonarr)
+    // Enable/Disable controls
     public bool Enabled { get; set; } = true;
     public bool EnableRss { get; set; } = true;
     public bool EnableAutomaticSearch { get; set; } = true;
@@ -223,7 +223,7 @@ public class Indexer
     // Tags for filtering
     public List<int> Tags { get; set; } = new();
 
-    // Rate limiting settings (Sonarr-style)
+    // Rate limiting settings
     public int? QueryLimit { get; set; } // Max queries per hour (null = unlimited)
     public int? GrabLimit { get; set; } // Max grabs per hour (null = unlimited)
     public int RequestDelayMs { get; set; } = 0; // Delay between requests in milliseconds
@@ -236,8 +236,9 @@ public class Indexer
 }
 
 /// <summary>
-/// Indexer status for tracking health and rate limiting (Sonarr-style)
-/// Implements separate query/grab backoffs as proposed in Sonarr issue #3132
+/// Indexer status for tracking health and rate limiting.
+/// Tracks separate query and grab backoffs so a streak of grab failures
+/// doesn't disable search (and vice versa).
 /// </summary>
 public class IndexerStatus
 {
@@ -253,8 +254,8 @@ public class IndexerStatus
     public DateTime? LastQueryFailure { get; set; }
     public string? LastQueryFailureReason { get; set; }
 
-    // Grab failure tracking (download failures) - separate from query failures
-    // Per Sonarr #3132: grab failures shouldn't prevent searching
+    // Grab failure tracking (download failures) - separate from query failures.
+    // Grab failures shouldn't prevent searching.
     public int GrabFailures { get; set; } = 0;
     public DateTime? GrabDisabledUntil { get; set; } // Backoff for grab failures
     public DateTime? LastGrabFailure { get; set; }
@@ -278,8 +279,8 @@ public class IndexerStatus
     // HTTP 429 handling - respects Retry-After without adding exponential backoff
     public DateTime? RateLimitedUntil { get; set; } // Retry-After from 429 response
 
-    // Connection error tracking - DNS/network errors don't escalate (Sonarr pattern)
-    // These are likely user network issues, not indexer problems
+    // Connection error tracking - DNS/network errors don't escalate.
+    // These are likely user network issues, not indexer problems.
     public int ConnectionErrors { get; set; } = 0;
     public DateTime? LastConnectionError { get; set; }
 }
@@ -351,9 +352,9 @@ public class ReleaseSearchResult
     public int CustomFormatScore { get; set; }
 
     /// <summary>
-    /// Size-based score for tiebreaking (Sonarr-style)
-    /// Higher score = closer to preferred size OR larger file when no preferred set
-    /// Uses 200MB rounding chunks to prevent minor differences affecting selection
+    /// Size-based score for tiebreaking.
+    /// Higher score = closer to preferred size OR larger file when no preferred set.
+    /// Uses 200MB rounding chunks to prevent minor differences affecting selection.
     /// </summary>
     public long SizeScore { get; set; }
 
@@ -412,6 +413,16 @@ public class BlocklistItem
     /// Null if applies to the whole event
     /// </summary>
     public string? Part { get; set; }
+
+    /// <summary>
+    /// Filesystem path of the rejected import. Used to suppress disk-scan
+    /// re-discovery: when the user rejects a disk-discovered PendingImport,
+    /// the path is recorded here so DiskScanService.DiscoverNewFilesAsync
+    /// skips it on subsequent scans even though the file still exists.
+    /// Null for download-client-originated entries — those match by
+    /// TorrentInfoHash or Title instead.
+    /// </summary>
+    public string? FilePath { get; set; }
 }
 
 /// <summary>
@@ -439,8 +450,9 @@ public enum PendingImportStatus
 }
 
 /// <summary>
-/// Pending import - external download from download client that needs manual mapping
-/// Similar to Sonarr's "Manual Import" queue for unrecognized downloads
+/// Pending import - external download from download client that needs
+/// manual mapping. Surfaces in the Activity page so the user can confirm
+/// the suggested event/part or pick a different one.
 /// </summary>
 public class PendingImport
 {
@@ -637,8 +649,7 @@ public enum AddDownloadErrorType
 }
 
 /// <summary>
-/// History of grabbed releases - stores original release info for re-grabbing
-/// This is a Sportarr-exclusive feature not available in Sonarr/Radarr.
+/// History of grabbed releases - stores original release info for re-grabbing.
 /// When users lose their media files but keep their database, they can
 /// re-grab the exact same releases they originally downloaded.
 /// </summary>

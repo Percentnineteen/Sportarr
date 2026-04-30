@@ -14,15 +14,15 @@ namespace Sportarr.Api.Services;
 public record SkippedIndexer(int IndexerId, string Name, string Reason, string Category);
 
 /// <summary>
-/// Unified indexer search service that searches across all configured indexers
-/// Implements quality-based scoring and automatic release selection with rate limiting
-/// Uses IndexerStatusService for Sonarr-style health tracking and exponential backoff
+/// Unified indexer search service that searches across all configured indexers.
+/// Implements quality-based scoring and automatic release selection with rate limiting.
+/// Uses IndexerStatusService for health tracking and exponential backoff.
 ///
-/// Rate limiting strategy (Sonarr-style):
-/// 1. Max 5 concurrent indexer queries per search (prevents overwhelming any single search)
-/// 2. HTTP-layer rate limiting via RateLimitHandler (2-second delay per indexer + jitter)
-/// 3. Exponential backoff for failed indexers (0s → 1m → 5m → 15m → 30m → 1h → 24h max)
-/// 4. HTTP 429 responses use Retry-After header only (no additional backoff)
+/// Rate limiting strategy:
+/// 1. Max 5 concurrent indexer queries per search (prevents overwhelming any single search).
+/// 2. HTTP-layer rate limiting via RateLimitHandler (2-second delay per indexer + jitter).
+/// 3. Exponential backoff for failed indexers (0s, 1m, 5m, 15m, 30m, 1h, 24h max).
+/// 4. HTTP 429 responses use Retry-After header only (no additional backoff).
 /// </summary>
 public class IndexerSearchService : IIndexerSearchService
 {
@@ -39,12 +39,12 @@ public class IndexerSearchService : IIndexerSearchService
     // Max concurrent indexer queries per search (prevents overwhelming many indexers at once)
     private const int MaxConcurrentIndexerQueries = 5;
 
-    // Static tracking for Sonarr-style search status indicator
+    // Static tracking for the active search status indicator.
     private static readonly object _statusLock = new();
     private static ActiveSearchStatus? _currentSearch = null;
 
     /// <summary>
-    /// Get current active search status (for Sonarr-style bottom-left indicator)
+    /// Get current active search status (drives the bottom-left indicator).
     /// </summary>
     public static ActiveSearchStatus? GetCurrentSearchStatus()
     {
@@ -206,7 +206,7 @@ public class IndexerSearchService : IIndexerSearchService
 
         var allResults = new List<ReleaseSearchResult>();
 
-        // SONARR-STYLE STATUS TRACKING: Initialize status for bottom-left indicator
+        // STATUS TRACKING: Initialize status for the bottom-left indicator.
         var searchStatus = new ActiveSearchStatus
         {
             SearchQuery = query,
@@ -223,9 +223,9 @@ public class IndexerSearchService : IIndexerSearchService
 
         try
         {
-            // SONARR-STYLE THROTTLING: Limit concurrent indexer queries to prevent overwhelming indexers
-            // Instead of hitting all 39 indexers simultaneously, we process max 5 at a time
-            // Combined with HTTP-layer rate limiting, this prevents rate limit errors
+            // THROTTLING: Limit concurrent indexer queries to prevent overwhelming indexers.
+            // Instead of hitting all 39 indexers simultaneously, we process max 5 at a time.
+            // Combined with HTTP-layer rate limiting, this prevents rate limit errors.
             using var indexerSemaphore = new SemaphoreSlim(MaxConcurrentIndexerQueries, MaxConcurrentIndexerQueries);
 
             var searchTasks = indexers.Select(async indexer =>
@@ -322,7 +322,7 @@ public class IndexerSearchService : IIndexerSearchService
             });
         }
 
-        // Load release profiles for keyword filtering (Sonarr-style)
+        // Load release profiles for keyword filtering.
         var releaseProfiles = await _releaseProfileService.LoadReleaseProfilesAsync();
 
         // Evaluate releases against quality profile
@@ -339,7 +339,7 @@ public class IndexerSearchService : IIndexerSearchService
             customFormats = await _db.CustomFormats.ToListAsync();
         }
 
-        // Load quality definitions for Sonarr-style size validation
+        // Load quality definitions for size validation.
         qualityDefinitions = await _db.QualityDefinitions.ToListAsync();
 
         // Load config for indexer retention setting
@@ -408,7 +408,7 @@ public class IndexerSearchService : IIndexerSearchService
             }
         }
 
-        // Sort by ranking priority (Sonarr-style - quality trumps all):
+        // Sort by ranking priority (quality trumps all):
         // 1. Approved status (approved first)
         // 2. Quality score (profile position)
         // 3. Custom format score
@@ -590,7 +590,7 @@ public class IndexerSearchService : IIndexerSearchService
     }
 
     /// <summary>
-    /// Fetch RSS feeds from all RSS-enabled indexers (Sonarr-style RSS sync)
+    /// Fetch RSS feeds from all RSS-enabled indexers (RSS sync).
     /// This fetches recent releases WITHOUT a search query - used for passive discovery
     /// Much more efficient than searching per-event: O(indexers) vs O(events * indexers)
     /// </summary>
@@ -611,7 +611,7 @@ public class IndexerSearchService : IIndexerSearchService
 
         var allResults = new List<ReleaseSearchResult>();
 
-        // SONARR-STYLE THROTTLING: Limit concurrent RSS fetches
+        // THROTTLING: Limit concurrent RSS fetches.
         using var indexerSemaphore = new SemaphoreSlim(MaxConcurrentIndexerQueries, MaxConcurrentIndexerQueries);
 
         var fetchTasks = indexers.Select(async indexer =>
@@ -784,7 +784,7 @@ public class IndexerSearchService : IIndexerSearchService
 }
 
 /// <summary>
-/// Represents the current active search status (Sonarr-style bottom-left indicator)
+/// Represents the current active search status (drives the bottom-left indicator).
 /// </summary>
 public class ActiveSearchStatus
 {

@@ -7,8 +7,8 @@ using Sportarr.Api.Models;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// User authentication service (matches Sonarr/Radarr implementation)
-/// Uses PBKDF2 with HMAC-SHA512 for secure password hashing
+/// User authentication service. Uses PBKDF2 with HMAC-SHA512 for secure
+/// password hashing.
 /// </summary>
 public class UserService
 {

@@ -5,15 +5,15 @@ using Microsoft.Extensions.Logging;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Background service that performs scheduled Event Mapping sync from the Sportarr API.
-/// Similar to Sonarr's XEM sync, this runs automatically every 12 hours.
+/// Background service that performs scheduled Event Mapping sync from the
+/// Sportarr API. Runs automatically every 12 hours.
 /// </summary>
 public class EventMappingSyncBackgroundService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<EventMappingSyncBackgroundService> _logger;
 
-    // Sync every 12 hours (like Sonarr's XEM)
+    // Sync every 12 hours
     private static readonly TimeSpan SyncInterval = TimeSpan.FromHours(12);
 
     // Wait 2 minutes on startup before first sync to let other services initialize

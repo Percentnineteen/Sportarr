@@ -1,15 +1,16 @@
 namespace Sportarr.Api;
 
 /// <summary>
-/// Centralized version information for Sportarr
-/// AppVersion: User-facing application version (increments with each update)
-/// ApiVersion: API compatibility version (remains stable for API consumers)
+/// Centralized version information for Sportarr.
+/// AppVersion: User-facing application version (increments with each update).
+/// ApiVersion: API compatibility version (remains stable for API consumers).
 ///
-/// App Version scheme: MAJOR.MINOR.PATCH.BUILD (4-part versioning like Sonarr)
-/// Format matches Sonarr/Radarr/Prowlarr standard versioning (e.g., 4.0.82.140)
-/// MAJOR.MINOR indicates Radarr v4 API compatibility, PATCH increments with each release
-/// BUILD is set by CI/CD pipeline, defaults to 0 for local builds
-/// Prowlarr requires minimum version 4.0.4 for Radarr v4 compatibility
+/// App Version scheme: MAJOR.MINOR.PATCH.BUILD (4-part).
+/// Format is the Radarr-v4 versioning style (e.g., 4.0.82.140) which Prowlarr
+/// uses to gate compatibility — Prowlarr requires minimum version 4.0.4 for
+/// Radarr v4 contract support, so MAJOR.MINOR is pinned to 4.0.
+/// PATCH increments with each release. BUILD is set by CI/CD, defaults to 0
+/// for local builds.
 /// </summary>
 public static class Version
 {
@@ -25,8 +26,8 @@ public static class Version
 
     /// <summary>
     /// Get the full 4-part version including build number from assembly
-    /// This matches Sonarr's versioning format (e.g., "4.0.82.140")
-    /// For local/dev builds without CI, appends the git commit hash (e.g., "4.0.977.0-abc1234")
+    /// (e.g., "4.0.82.140"). For local/dev builds without CI, appends the
+    /// git commit hash (e.g., "4.0.977.0-abc1234").
     /// </summary>
     public static string GetFullVersion()
     {

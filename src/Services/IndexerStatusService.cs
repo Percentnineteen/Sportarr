@@ -5,15 +5,15 @@ using Sportarr.Api.Models;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Service for managing indexer health status and rate limiting (Enhanced Sonarr-style)
+/// Service for managing indexer health status and rate limiting.
 ///
-/// Key improvements over basic implementation:
-/// 1. Separate query vs grab backoffs (Sonarr issue #3132) - grab failures don't prevent searching
-/// 2. Connection errors don't escalate (Sonarr pattern) - DNS/network issues are user problems
-/// 3. HTTP 429 respects only Retry-After without adding exponential backoff
-/// 4. Startup grace period (Lidarr pattern) - don't over-penalize during initialization
+/// Design notes:
+/// 1. Separate query vs grab backoffs - grab failures don't prevent searching.
+/// 2. Connection errors don't escalate - DNS/network issues are user problems.
+/// 3. HTTP 429 respects only Retry-After without adding exponential backoff.
+/// 4. Startup grace period - don't over-penalize during initialization.
 ///
-/// Uses IDbContextFactory to support concurrent indexer searches without DbContext threading issues
+/// Uses IDbContextFactory to support concurrent indexer searches without DbContext threading issues.
 /// </summary>
 public class IndexerStatusService
 {
@@ -28,8 +28,8 @@ public class IndexerStatusService
     private static readonly TimeSpan StartupGracePeriod = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan MaxBackoffDuringStartup = TimeSpan.FromMinutes(5);
 
-    // Escalation backoff configuration - matches Sonarr's EscalationBackOff.cs exactly
-    // See: https://github.com/Sonarr/Sonarr/blob/develop/src/NzbDrone.Common/TPL/EscalationBackOff.cs
+    // Escalation backoff configuration: 0, 1, 5, 15, 30, 60 minutes, then 1 day.
+    // Each consecutive failure bumps the level; success resets to 0.
     private static readonly TimeSpan[] BackoffDurations = new[]
     {
         TimeSpan.Zero,              // Level 0: Immediate retry (first failure)
@@ -151,8 +151,8 @@ public class IndexerStatusService
     }
 
     /// <summary>
-    /// Check if an indexer is available for grabbing (downloading)
-    /// Separate from query availability - per Sonarr #3132, grab failures shouldn't prevent searching
+    /// Check if an indexer is available for grabbing (downloading).
+    /// Separate from query availability — grab failures shouldn't prevent searching.
     /// </summary>
     public async Task<(bool IsAllowed, string? Reason)> CanGrabAsync(int indexerId)
     {
@@ -346,8 +346,8 @@ public class IndexerStatusService
     }
 
     /// <summary>
-    /// Record a grab failure for an indexer (separate from query failures)
-    /// Per Sonarr #3132: grab failures shouldn't prevent searching
+    /// Record a grab failure for an indexer (separate from query failures).
+    /// Grab failures shouldn't prevent searching.
     /// </summary>
     public async Task RecordGrabFailureAsync(int indexerId, string reason)
     {
@@ -391,8 +391,9 @@ public class IndexerStatusService
     }
 
     /// <summary>
-    /// Record a connection error (DNS, timeout, network issues)
-    /// Per Sonarr pattern: connection errors don't escalate backoff - they're likely user network issues
+    /// Record a connection error (DNS, timeout, network issues).
+    /// Connection errors don't escalate backoff — they're likely user network
+    /// issues, not indexer problems.
     /// </summary>
     public async Task RecordConnectionErrorAsync(int indexerId, string reason)
     {
@@ -445,8 +446,8 @@ public class IndexerStatusService
     }
 
     /// <summary>
-    /// Record HTTP 429 rate limit response
-    /// Uses ONLY Retry-After, doesn't add exponential backoff on top (Sonarr improvement)
+    /// Record HTTP 429 rate limit response.
+    /// Uses ONLY Retry-After — does not add exponential backoff on top.
     /// </summary>
     public async Task RecordRateLimitedAsync(int indexerId, TimeSpan? retryAfter = null)
     {
@@ -465,8 +466,8 @@ public class IndexerStatusService
             db.IndexerStatuses.Add(status);
         }
 
-        // Use Retry-After if provided, otherwise default to 5 minutes
-        // Per Sonarr improvement: use ONLY Retry-After, no additional exponential backoff
+        // Use Retry-After if provided, otherwise default to 5 minutes.
+        // ONLY Retry-After — no additional exponential backoff on top.
         var waitTime = retryAfter ?? TimeSpan.FromMinutes(5);
 
         // Cap at 1 hour max wait

@@ -1,8 +1,8 @@
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Custom format for matching and scoring releases (matches Sonarr/Radarr)
-/// Custom formats use regex patterns to match release titles and assign scores
+/// Custom format for matching and scoring releases.
+/// Custom formats use regex patterns to match release titles and assign scores.
 /// </summary>
 public class CustomFormat
 {
@@ -59,8 +59,7 @@ public class CustomFormat
 }
 
 /// <summary>
-/// A single condition/specification within a custom format
-/// Matches Sonarr's condition system
+/// A single condition/specification within a custom format.
 /// </summary>
 public class FormatSpecification
 {
@@ -101,9 +100,9 @@ public class FormatSpecification
 }
 
 /// <summary>
-/// Quality definition with min/max sizes (Sonarr-compatible format)
-/// Size values are in MB per minute of runtime, matching Sonarr/Radarr behavior.
-/// Example: MinSize=15 MB/min for a 180-min event = 2700 MB (2.7 GB) minimum
+/// Quality definition with min/max sizes.
+/// Size values are in MB per minute of runtime.
+/// Example: MinSize=15 MB/min for a 180-min event = 2700 MB (2.7 GB) minimum.
 /// </summary>
 public class QualityDefinition
 {
@@ -132,8 +131,8 @@ public class QualityDefinition
     public decimal? MaxSize { get; set; }
 
     /// <summary>
-    /// Preferred/target size in MB per minute - Sportarr will prefer releases closer to this size
-    /// Uses Sonarr-style 200MB chunk rounding to prevent minor differences from affecting selection
+    /// Preferred/target size in MB per minute - Sportarr will prefer releases closer to this size.
+    /// Uses 200MB chunk rounding to prevent minor differences from affecting selection.
     /// </summary>
     public decimal PreferredSize { get; set; }
 
@@ -188,9 +187,9 @@ public class ReleaseEvaluation
     public int CustomFormatScore { get; set; }
 
     /// <summary>
-    /// Size-based score for tiebreaking (Sonarr-style)
-    /// Higher score = closer to preferred size OR larger file when no preferred set
-    /// Uses 200MB rounding chunks like Sonarr/Radarr to prevent minor differences affecting selection
+    /// Size-based score for tiebreaking.
+    /// Higher score = closer to preferred size OR larger file when no preferred set.
+    /// Uses 200MB rounding chunks to prevent minor differences affecting selection.
     /// </summary>
     public long SizeScore { get; set; }
 

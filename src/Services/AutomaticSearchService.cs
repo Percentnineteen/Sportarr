@@ -6,9 +6,9 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Automatic search and download service for monitored events
-/// Implements Sonarr/Radarr-style automation: search → select → download
-/// Includes concurrent event search limiting (max 3) to prevent indexer rate limiting
+/// Automatic search and download service for monitored events.
+/// Implements the search → select → download pipeline.
+/// Includes concurrent event search limiting (max 3) to prevent indexer rate limiting.
 /// </summary>
 public class AutomaticSearchService : IAutomaticSearchService
 {
@@ -26,7 +26,6 @@ public class AutomaticSearchService : IAutomaticSearchService
     private readonly ReleaseProfileService _releaseProfileService;
     private readonly ILogger<AutomaticSearchService> _logger;
 
-    // Concurrent event search limiting (Sonarr-style)
     // Max 3 concurrent event searches to prevent overwhelming indexers
     private static readonly SemaphoreSlim _eventSearchSemaphore = new(3, 3);
 
@@ -144,26 +143,23 @@ public class AutomaticSearchService : IAutomaticSearchService
                 _logger.LogInformation("[{SearchType}] Processing unmonitored event (manual search): {Title}", searchType, evt.Title);
             }
 
-            // PRE-EVENT CHECK: Don't search until the event has actually started (+1h buffer).
-            // Media is rarely available before the event ends; searching before start just burns indexer
-            // API calls on content that cannot exist yet. The 1h buffer is a conservative concession
-            // for the rare early-upload / pre-show release. Manual searches bypass this entirely.
-            if (!isManualSearch)
+            // PRE-EVENT CHECK: don't search until the event has actually started.
+            // Media literally cannot exist before the event begins; searching earlier
+            // just burns indexer API calls. Manual searches bypass entirely.
+            // (Pre-event scene fakes are rejected at the release level by their
+            //  PublishDate vs evt.EventDate comparison; we don't need an extra
+            //  airdate-grace gate here since events have wildly variable durations.)
+            if (!isManualSearch && DateTime.UtcNow < evt.EventDate)
             {
-                var postStartDelay = TimeSpan.FromHours(1);
-                var searchableAt = evt.EventDate.Add(postStartDelay);
-                if (DateTime.UtcNow < searchableAt)
-                {
-                    result.Success = false;
-                    result.Message = $"Event hasn't started yet (searchable at {searchableAt:yyyy-MM-dd HH:mm} UTC). Automatic search skipped.";
-                    _logger.LogInformation("[{SearchType}] Skipping pre-event search: {Title} (starts: {Date} UTC)",
-                        searchType, evt.Title, evt.EventDate.ToString("yyyy-MM-dd HH:mm"));
-                    return result;
-                }
+                result.Success = false;
+                result.Message = $"Event hasn't started yet (begins {evt.EventDate:yyyy-MM-dd HH:mm} UTC). Automatic search skipped.";
+                _logger.LogInformation("[{SearchType}] Skipping pre-event search: {Title} (starts: {Date} UTC)",
+                    searchType, evt.Title, evt.EventDate.ToString("yyyy-MM-dd HH:mm"));
+                return result;
             }
 
-            // Check for recent failed downloads - prevent immediate re-attempts
-            // This implements Sonarr/Radarr-style retry backoff: don't hammer failed downloads
+            // Check for recent failed downloads - prevent immediate re-attempts.
+            // Retry backoff: don't hammer failed downloads.
             // NOTE: Manual searches bypass this check - user explicitly wants to retry
             DownloadQueueItem? recentFailedDownload = null;
             if (!isManualSearch)
@@ -175,9 +171,9 @@ public class AutomaticSearchService : IAutomaticSearchService
 
                 if (recentFailedDownload != null)
                 {
-                    // Calculate backoff time based on retry count (exponential backoff)
-                    // 1st retry: 30min, 2nd: 1hr, 3rd: 2hr, 4th: 4hr, 5th+: 8hr
-                    var retryDelays = new[] { 30, 60, 120, 240, 480 }; // minutes
+                    // User-configurable exponential backoff via Config.AutoSearchRetryBackoffMinutes
+                    // (CSV like "30,60,120,240,480"). The last entry is reused once exhausted.
+                    var retryDelays = ParseRetryBackoff(config.AutoSearchRetryBackoffMinutes);
                     var currentRetryCount = recentFailedDownload.RetryCount ?? 0;
                     var delayMinutes = currentRetryCount < retryDelays.Length ? retryDelays[currentRetryCount] : retryDelays[^1];
                     var nextRetryTime = (recentFailedDownload.LastUpdate ?? DateTime.UtcNow).AddMinutes(delayMinutes);
@@ -214,9 +210,9 @@ public class AutomaticSearchService : IAutomaticSearchService
             await _db.Entry(evt).Reference(e => e.AwayTeam).LoadAsync();
             await _db.Entry(evt).Reference(e => e.League).LoadAsync();
 
-            // Resolve quality profile BEFORE searching so custom formats are applied during evaluation
-            // Without this, cached and live search results skip custom format scoring entirely
-            // Fallback chain: provided ID → event's profile → league's profile → default
+            // Resolve quality profile BEFORE searching so custom formats are applied during evaluation.
+            // Without this, cached and live search results skip custom format scoring entirely.
+            // Fallback chain: provided ID → event's profile → league's profile → default.
             if (!qualityProfileId.HasValue)
             {
                 if (evt.QualityProfileId.HasValue)
@@ -232,6 +228,19 @@ public class AutomaticSearchService : IAutomaticSearchService
                     var defaultProfile = await _db.QualityProfiles.OrderBy(q => q.Id).FirstOrDefaultAsync();
                     qualityProfileId = defaultProfile?.Id;
                 }
+            }
+
+            // No quality profile anywhere = nothing to evaluate releases against.
+            // Abort cleanly so we don't run a search whose results can never be approved
+            // (custom format scoring is skipped without a profile, and the user almost
+            // certainly hasn't finished setup).
+            if (!qualityProfileId.HasValue)
+            {
+                result.Success = false;
+                result.Message = "No quality profile configured. Add at least one quality profile under Settings -> Profiles.";
+                _logger.LogWarning("[{SearchType}] Aborting search for {Title}: no quality profile configured",
+                    searchType, evt.Title);
+                return result;
             }
 
             // Build queries WITH the part included for accurate results
@@ -438,7 +447,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                 _logger.LogInformation("[{SearchType}] {Count} releases rejected (blocklisted)", searchType, blocklistedCount);
             }
 
-            // SONARR-STYLE RELEASE FILTERING: Use releases that passed ReleaseEvaluator validation
+            // RELEASE FILTERING: Use releases that passed ReleaseEvaluator validation
             // ReleaseEvaluator already handles:
             // - Part validation (Main Card vs Prelims)
             // - Size validation (min/max per quality)
@@ -448,6 +457,23 @@ public class AutomaticSearchService : IAutomaticSearchService
             var approvedReleases = allReleases
                 .Where(r => r.Approved && !r.Rejections.Any())
                 .ToList();
+
+            // Minimum-age filter: hold off grabbing releases that just
+            // appeared at the indexer. Manual searches bypass.
+            if (!isManualSearch && config.IndexerMinimumAgeMinutes > 0)
+            {
+                var ageThreshold = DateTime.UtcNow.AddMinutes(-config.IndexerMinimumAgeMinutes);
+                var beforeFilter = approvedReleases.Count;
+                approvedReleases = approvedReleases
+                    .Where(r => r.PublishDate == default || r.PublishDate <= ageThreshold)
+                    .ToList();
+                if (approvedReleases.Count < beforeFilter)
+                {
+                    _logger.LogInformation(
+                        "[Automatic Search] Minimum-age filter: {Filtered}/{Before} releases held back (need {Min}m old)",
+                        beforeFilter - approvedReleases.Count, beforeFilter, config.IndexerMinimumAgeMinutes);
+                }
+            }
 
             _logger.LogInformation("[Automatic Search] {ApprovedCount}/{TotalCount} releases approved by quality/part validation",
                 approvedReleases.Count, allReleases.Count);
@@ -773,15 +799,15 @@ public class AutomaticSearchService : IAutomaticSearchService
                     }
                 }
 
-                // Perform upgrade eligibility check if we have a relevant existing file
-                // This implements Sonarr-style upgrade logic:
+                // Perform upgrade eligibility check if we have a relevant existing file.
+                // Upgrade logic:
                 // 1. Check if UpgradesAllowed is enabled on the quality profile
                 // 2. Check if existing file meets or exceeds CutoffQuality
                 // 3. Check if existing file meets or exceeds CutoffFormatScore
                 // 4. Compare quality/format scores to determine if new release is actually better
                 if (relevantFile != null && !string.IsNullOrEmpty(relevantFile.Quality))
                 {
-                    // SONARR CHECK 1: UpgradesAllowed
+                    // CHECK 1: UpgradesAllowed
                     // If upgrades are disabled on the quality profile, don't upgrade existing files
                     if (!qualityProfile.UpgradesAllowed)
                     {
@@ -803,7 +829,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                         relevantFile.Quality, existingQualityScore, existingFormatScore,
                         bestRelease.Quality, newReleaseQualityScore, newReleaseFormatScore);
 
-                    // SONARR CHECK 2: CutoffQuality
+                    // CHECK 2: CutoffQuality
                     // If existing file quality meets or exceeds cutoff, don't upgrade based on quality alone
                     bool qualityCutoffMet = false;
                     if (qualityProfile.CutoffQuality.HasValue)
@@ -818,7 +844,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                         }
                     }
 
-                    // SONARR CHECK 3: CutoffFormatScore
+                    // CHECK 3: CutoffFormatScore
                     // If existing file custom format score meets or exceeds cutoff, don't upgrade based on format score
                     bool formatCutoffMet = false;
                     if (qualityProfile.CutoffFormatScore.HasValue)
@@ -841,7 +867,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                         return result;
                     }
 
-                    // SONARR CHECK 4: Is the new release actually better?
+                    // CHECK 4: Is the new release actually better?
                     // Compare quality scores first, then format scores as tiebreaker
                     bool isQualityUpgrade = newReleaseQualityScore > existingQualityScore;
                     bool isFormatUpgrade = newReleaseFormatScore > existingFormatScore &&
@@ -903,9 +929,8 @@ public class AutomaticSearchService : IAutomaticSearchService
                 downloadClient.Type, downloadClient.Name, bestRelease.Protocol);
 
             // NOTE: We do NOT specify download path - download client uses its own configured directory
-            // The category is used to track Sportarr downloads
-            // Root folders are used later during the import process (not here)
-            // This matches Sonarr/Radarr behavior
+            // The category is used to track Sportarr downloads.
+            // Root folders are used later during the import process (not here).
 
             // Look up indexer seed settings for torrent clients
             var indexerRecord = await _db.Indexers
@@ -1003,8 +1028,8 @@ public class AutomaticSearchService : IAutomaticSearchService
 
             await _db.SaveChangesAsync();
 
-            // Immediately check download status (Sonarr/Radarr behavior)
-            // This ensures the download appears in the Activity page with real-time status
+            // Immediately check download status so it appears in the Activity
+            // page with real-time status without waiting for the next poll.
             _logger.LogInformation("[Automatic Search] Performing immediate status check...");
             try
             {
@@ -1497,6 +1522,30 @@ public class AutomaticSearchService : IAutomaticSearchService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Parse the user-configurable retry backoff CSV (e.g. "30,60,120,240,480")
+    /// into a minutes array. Falls back to the default schedule on any parse
+    /// error so a malformed config never blocks searches entirely.
+    /// </summary>
+    private static int[] ParseRetryBackoff(string? csv)
+    {
+        var defaults = new[] { 30, 60, 120, 240, 480 };
+        if (string.IsNullOrWhiteSpace(csv)) return defaults;
+        try
+        {
+            var parsed = csv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.TryParse(s, out var n) ? n : -1)
+                .Where(n => n > 0)
+                .ToArray();
+            return parsed.Length > 0 ? parsed : defaults;
+        }
+        catch
+        {
+            return defaults;
+        }
     }
 }
 

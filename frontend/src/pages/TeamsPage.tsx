@@ -102,12 +102,14 @@ export default function TeamsPage() {
   const [searchForUpgrades, setSearchForUpgrades] = useState(false);
   const [isAddingLeagues, setIsAddingLeagues] = useState(false);
 
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const { data: allTeams = [], isLoading: isLoadingTeams } = useQuery({
     queryKey: ['all-teams'],
     queryFn: async () => {
       const response = await apiClient.get<TeamApiResponse[]>('/teams/all');
 
-      return (response.data || []).map((team): Team => ({
+      return (Array.isArray(response.data) ? response.data : []).map((team): Team => ({
         id: team.Id ?? team.id ?? 0,
         externalId: team.idTeam,
         name: team.strTeam ?? '',
@@ -120,9 +122,23 @@ export default function TeamsPage() {
         added: team.Added ?? team.added ?? new Date().toISOString(),
       }));
     },
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 60 * 1000, // 30 min - backend caches for hours, no need for frequent refetches
     refetchOnWindowFocus: false,
   });
+
+  const handleRefreshTeams = async () => {
+    setIsRefreshing(true);
+    try {
+      // Bust the backend cache first, then refetch via React Query
+      await apiClient.get('/teams/all?refresh=true');
+      await queryClient.refetchQueries({ queryKey: ['all-teams'] });
+      toast.success('Teams refreshed from API');
+    } catch {
+      toast.error('Failed to refresh teams');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const { data: followedTeams = [] } = useQuery({
     queryKey: ['followed-teams'],
@@ -135,14 +151,15 @@ export default function TeamsPage() {
   const { data: qualityProfiles } = useQuery({
     queryKey: ['quality-profiles'],
     queryFn: async () => {
-      const response = await apiClient.get<QualityProfile[]>('/settings/quality-profiles');
+      const response = await apiClient.get<QualityProfile[]>('/qualityprofile');
+      if (!Array.isArray(response.data)) return [];
       return response.data;
     },
   });
 
   const followedTeamIds = useMemo(() => {
     const ids = new Set<string>();
-    followedTeams.forEach((team) => {
+    (Array.isArray(followedTeams) ? followedTeams : []).forEach((team) => {
       if (team.externalId) {
         ids.add(team.externalId);
       }
@@ -151,6 +168,7 @@ export default function TeamsPage() {
   }, [followedTeams]);
 
   const filteredTeams = useMemo(() => {
+    if (!Array.isArray(allTeams)) return [];
     let filtered = allTeams;
 
     if (selectedSport !== 'all') {
@@ -224,9 +242,9 @@ export default function TeamsPage() {
         leagues: DiscoveredLeague[];
       }>(`/followed-teams/${followedTeamId}/leagues`);
 
-      const leagues = response.data.leagues || [];
+      const leagues = Array.isArray(response.data?.leagues) ? response.data.leagues : [];
       setDiscoveredLeagues(leagues);
-      setSelectedLeagueIds(new Set(leagues.filter((league) => !league.isAdded).map((league) => league.externalId)));
+      setSelectedLeagueIds(new Set(leagues.filter((league: DiscoveredLeague) => !league.isAdded).map((league: DiscoveredLeague) => league.externalId)));
     } catch {
       toast.error('Failed to discover leagues');
     } finally {
@@ -284,19 +302,21 @@ export default function TeamsPage() {
         searchForUpgrades,
       });
 
-      const { added, skipped, errors } = response.data;
+      const added = Array.isArray(response.data?.added) ? response.data.added : [];
+      const skipped = Array.isArray(response.data?.skipped) ? response.data.skipped : [];
+      const errors = Array.isArray(response.data?.errors) ? response.data.errors : [];
 
-      if (added?.length > 0) {
+      if (added.length > 0) {
         toast.success(`Added ${added.length} league(s)`, {
           description: added.map((league: { name: string }) => league.name).join(', '),
         });
       }
-      if (skipped?.length > 0) {
+      if (skipped.length > 0) {
         toast.info(`Skipped ${skipped.length} league(s)`, {
           description: skipped.map((league: { name: string; reason: string }) => `${league.name}: ${league.reason}`).join(', '),
         });
       }
-      if (errors?.length > 0) {
+      if (errors.length > 0) {
         toast.error(`Failed to add ${errors.length} league(s)`, {
           description: errors.map((league: { reason: string }) => league.reason).join(', '),
         });
@@ -347,7 +367,7 @@ export default function TeamsPage() {
           <ArrowPathIcon className="w-8 h-8 animate-spin mx-auto mb-2" />
           Discovering leagues...
         </div>
-      ) : discoveredLeagues.length === 0 ? (
+      ) : !Array.isArray(discoveredLeagues) || discoveredLeagues.length === 0 ? (
         <div className="text-center py-8 text-gray-400">
           No leagues found for {teamName}
         </div>
@@ -420,7 +440,7 @@ export default function TeamsPage() {
                 onClick={toggleSelectAll}
                 className="text-sm text-blue-400 hover:text-blue-300"
               >
-                {selectedLeagueIds.size === discoveredLeagues.filter((league) => !league.isAdded).length
+                {selectedLeagueIds.size === (Array.isArray(discoveredLeagues) ? discoveredLeagues : []).filter((league) => !league.isAdded).length
                   ? 'Deselect All'
                   : 'Select All'}
               </button>
@@ -444,7 +464,7 @@ export default function TeamsPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {discoveredLeagues.map((league) => (
+            {(Array.isArray(discoveredLeagues) ? discoveredLeagues : []).map((league) => (
               <div
                 key={league.externalId}
                 onClick={() => !league.isAdded && toggleLeagueSelection(league.externalId)}
@@ -706,7 +726,6 @@ export default function TeamsPage() {
           </CompactTableFrame>
         )}
 
-        {expandedTeam?.externalId && renderExpandedLeagues(expandedTeam.name, expandedTeam.externalId)}
       </>
     );
   };
@@ -716,6 +735,17 @@ export default function TeamsPage() {
       <PageHeader
         title="Add Team"
         subtitle="Follow teams across multiple leagues. When you follow a team, you can add all their leagues at once."
+        actions={
+          <button
+            onClick={handleRefreshTeams}
+            disabled={isRefreshing || isLoadingTeams}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Refresh teams from API (cached results are used by default)"
+          >
+            <ArrowPathIcon className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        }
       />
 
         <div className="bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-700/30 rounded-lg p-4 mb-6">
@@ -926,6 +956,20 @@ export default function TeamsPage() {
                 </p>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Expanded leagues panel for compact table view -- rendered outside both views
+            so it's always visible below the table when a team is expanded. Card view handles
+            expansion inline inside each card, so this only renders in compact mode. */}
+        {compactView && expandedTeam?.externalId && (
+          <div className="mt-4 rounded-lg border border-red-900/30 bg-gradient-to-br from-gray-900 to-black">
+            <div className="flex items-center gap-3 border-b border-gray-800 px-4 py-3">
+              <h3 className="text-lg font-semibold text-white">{expandedTeam.name}</h3>
+              <span className="rounded bg-red-900/30 px-2 py-0.5 text-xs text-red-400">{expandedTeam.sport}</span>
+              {expandedTeam.country && <span className="text-xs text-gray-400">{expandedTeam.country}</span>}
+            </div>
+            {renderExpandedLeagues(expandedTeam.name, expandedTeam.externalId)}
           </div>
         )}
     </PageShell>

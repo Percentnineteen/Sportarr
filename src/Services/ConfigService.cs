@@ -6,8 +6,8 @@ using Sportarr.Api.Services.Interfaces;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Service for managing config.xml file (Sonarr/Radarr pattern)
-/// Thread-safe, with in-memory caching for performance
+/// Service for managing the config.xml file. Thread-safe, with in-memory
+/// caching for performance.
 /// </summary>
 public class ConfigService : IConfigService
 {

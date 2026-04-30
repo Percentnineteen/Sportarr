@@ -2,7 +2,7 @@ namespace Sportarr.Api.Services.Interfaces;
 
 /// <summary>
 /// Interface for automatic search and download operations.
-/// Implements Sonarr/Radarr-style automation: search → select → download
+/// Implements the search → select → download pipeline.
 /// </summary>
 public interface IAutomaticSearchService
 {

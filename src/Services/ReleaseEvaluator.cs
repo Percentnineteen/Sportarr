@@ -14,7 +14,7 @@ namespace Sportarr.Api.Services;
 /// 3. Seeders (for torrents)
 /// 4. Size (proximity to preferred size)
 ///
-/// Size validation uses Sonarr-style per-quality definitions:
+/// Size validation uses per-quality definitions:
 /// - MinSize/MaxSize/PreferredSize are in MB per minute of runtime
 /// - For sports events, default runtime is ~180 minutes (3 hours)
 /// - Releases outside min/max are rejected
@@ -33,8 +33,8 @@ public class ReleaseEvaluator
     public const int DefaultSportsRuntimeMinutes = 180;
 
     /// <summary>
-    /// Chunk size in MB for rounding size comparisons (Sonarr uses 200MB)
-    /// This prevents minor size differences from affecting selection
+    /// Chunk size in MB for rounding size comparisons.
+    /// This prevents minor size differences from affecting selection.
     /// </summary>
     private const double SizeComparisonChunkMB = 200.0;
 
@@ -51,7 +51,7 @@ public class ReleaseEvaluator
     /// <param name="release">The release to evaluate</param>
     /// <param name="profile">Quality profile to evaluate against</param>
     /// <param name="customFormats">Optional custom formats to apply</param>
-    /// <param name="qualityDefinitions">Quality definitions for size limits (Sonarr-style)</param>
+    /// <param name="qualityDefinitions">Quality definitions for size limits</param>
     /// <param name="requestedPart">Optional specific part requested (e.g., "Main Card", "Prelims")</param>
     /// <param name="sport">Sport type for part detection</param>
     /// <param name="enableMultiPartEpisodes">Whether multi-part episodes are enabled. When false, rejects releases with detected parts.</param>
@@ -109,22 +109,26 @@ public class ReleaseEvaluator
                 // Multi-part ENABLED and specific part requested
                 if (detectedPart == null)
                 {
-                    // No part detected in release title
-                    // For fighting sports, unmarked releases are typically the MAIN CARD/MAIN EVENT
-                    // (Prelims and Early Prelims are almost always explicitly labeled)
-                    // So: Accept unmarked releases for Main Card searches, reject for other parts
-                    if (requestedPart.Equals("Main Card", StringComparison.OrdinalIgnoreCase))
+                    // No part detected in release title.
+                    // Pre-shows (Prelims, Early Prelims, Countdown, Zero Hour) are almost
+                    // always explicitly labeled. Accept unlabeled releases when the user
+                    // requested any "main" part name (Main Card for fighting, Main Show for
+                    // wrestling, Main Event for boxing/PPVs).
+                    var requestedLower = requestedPart.ToLowerInvariant();
+                    var isMainPartRequest = requestedLower == "main card"
+                        || requestedLower == "main show"
+                        || requestedLower == "main event"
+                        || requestedLower == "main";
+                    if (isMainPartRequest)
                     {
-                        // Accept unmarked releases as Main Card candidates
-                        _logger.LogDebug("[Release Evaluator] {Title} - Unmarked release accepted as Main Card candidate", release.Title);
+                        _logger.LogDebug("[Release Evaluator] {Title} - Unmarked release accepted as {Part} candidate",
+                            release.Title, requestedPart);
                     }
                     else
                     {
-                        // Searching for Prelims/Early Prelims but release has no part indicator
-                        // This is likely the main card, not the prelims we want
-                        evaluation.Rejections.Add($"Requested part '{requestedPart}' but release has no part detected (likely Main Card)");
+                        evaluation.Rejections.Add($"Requested part '{requestedPart}' but release has no part detected (likely main show)");
                         evaluation.Approved = false;
-                        _logger.LogInformation("[Release Evaluator] {Title} - REJECTED: Requested '{RequestedPart}' but no part detected (likely Main Card)",
+                        _logger.LogInformation("[Release Evaluator] {Title} - REJECTED: Requested '{RequestedPart}' but no part detected",
                             release.Title, requestedPart);
                         return evaluation;
                     }
@@ -159,7 +163,7 @@ public class ReleaseEvaluator
             }
         }
 
-        // Check file size limits using Sonarr-style per-quality definitions
+        // Check file size limits using per-quality definitions
         // Size limits are defined in MB per minute of runtime
         // SKIP size validation for weekly packs - they contain multiple events so will always be large
         if (isPack)
@@ -201,7 +205,7 @@ public class ReleaseEvaluator
             }
         }
 
-        // Evaluate custom formats using Sonarr's exact matching logic
+        // Evaluate custom formats
         if (customFormats != null && customFormats.Any())
         {
             var formatEval = EvaluateCustomFormats(release, customFormats, profile, isPack);
@@ -209,7 +213,7 @@ public class ReleaseEvaluator
             evaluation.CustomFormatScore = formatEval.TotalScore;
         }
 
-        // Check minimum custom format score (Sonarr: releases below this are rejected)
+        // Check minimum custom format score (releases below this are rejected)
         // Skip this check for weekly packs - they often have different naming conventions
         if (!isPack && profile != null && profile.MinFormatScore.HasValue &&
             evaluation.CustomFormatScore < profile.MinFormatScore.Value)
@@ -521,8 +525,8 @@ public class ReleaseEvaluator
                 // Track matched format for caching (stores ID and name)
                 matchedFormatInfo.Add((format.Id, format.Name));
 
-                // Get score for this format from profile's FormatItems
-                // Sonarr behavior: scores must be explicitly configured per profile
+                // Get score for this format from profile's FormatItems.
+                // Scores must be explicitly configured per profile.
                 var formatItem = profile?.FormatItems?.FirstOrDefault(fi => fi.FormatId == format.Id);
                 var formatScore = formatItem?.Score ?? 0;
 
@@ -574,7 +578,7 @@ public class ReleaseEvaluator
 
     /// <summary>
     /// Check if a custom format matches a release.
-    /// Sonarr's actual matching logic (from CustomFormatCalculationService):
+    /// Matching logic:
     ///   1. Evaluate ALL specifications (apply negate flag)
     ///   2. If ANY required specification fails → format doesn't match
     ///   3. If only required specs exist and all pass → format matches
@@ -674,7 +678,7 @@ public class ReleaseEvaluator
             _ => false
         };
 
-        // Apply negate (Sonarr does this at the specification level)
+        // Apply negate (the specification-level inversion flag)
         return spec.Negate ? !matches : matches;
     }
 
@@ -699,8 +703,8 @@ public class ReleaseEvaluator
     }
 
     /// <summary>
-    /// Evaluate Source specification (matches media source)
-    /// Sonarr Source enum values (from SourceSpecification):
+    /// Evaluate Source specification (matches media source).
+    /// Source enum values (TRaSH Guides custom-format format):
     ///   0 = Unknown, 1 = Television, 2 = TelevisionRaw, 3 = WEBDL, 4 = WEBRip,
     ///   5 = DVD, 6 = Bluray, 7 = BlurayRaw (Remux)
     /// </summary>
@@ -716,10 +720,10 @@ public class ReleaseEvaluator
         if (detectedSource == QualityParser.QualitySource.Unknown)
             return false;
 
-        // Handle numeric IDs (Sonarr/TRaSH format) or string names
+        // Handle numeric IDs (TRaSH format) or string names
         if (int.TryParse(value, out var sourceId))
         {
-            // Map Sonarr source IDs to QualitySource enum
+            // Map source IDs to QualitySource enum
             // These IDs match TRaSH Guides custom format specifications
             var expectedSource = sourceId switch
             {
@@ -750,9 +754,9 @@ public class ReleaseEvaluator
     }
 
     /// <summary>
-    /// Evaluate Resolution specification
-    /// TRaSH/Sonarr uses actual resolution values (360, 480, 540, 576, 720, 1080, 2160)
-    /// not sequential IDs
+    /// Evaluate Resolution specification.
+    /// TRaSH custom formats use actual resolution values (360, 480, 540, 576,
+    /// 720, 1080, 2160) not sequential IDs.
     /// </summary>
     private bool EvaluateResolutionSpec(ReleaseSearchResult release, FormatSpecification spec)
     {
@@ -833,9 +837,10 @@ public class ReleaseEvaluator
     }
 
     /// <summary>
-    /// Evaluate Language specification
-    /// Multi-language releases (MULTI) are treated as including English since they typically do.
-    /// This matches Sonarr/Radarr behavior where Multi is not penalized for language custom formats.
+    /// Evaluate Language specification.
+    /// Multi-language releases (MULTI) are treated as including English since
+    /// they typically do, so MULTI releases are not penalized for language
+    /// custom formats.
     /// </summary>
     private bool EvaluateLanguageSpec(ReleaseSearchResult release, FormatSpecification spec)
     {
@@ -843,8 +848,8 @@ public class ReleaseEvaluator
         if (string.IsNullOrEmpty(value))
             return false;
 
-        // Use LanguageDetector which defaults to English when no explicit language tag found
-        // This matches Sonarr's behavior where unmarked releases are assumed English
+        // Use LanguageDetector which defaults to English when no explicit language tag found.
+        // Unmarked releases are assumed English.
         var detectedLanguage = LanguageDetector.DetectLanguage(release.Title);
 
         // Multi-language releases are treated as satisfying English/Original language requirements
@@ -852,10 +857,10 @@ public class ReleaseEvaluator
         // Dual Audio releases also typically include English
         var isMultiLanguage = detectedLanguage == "Multi" || detectedLanguage == "Dual Audio";
 
-        // Handle numeric IDs (Sonarr's language IDs) or language names
+        // Handle numeric IDs (TRaSH format) or language names
         if (int.TryParse(value, out var langId))
         {
-            // Map Sonarr language IDs to language names
+            // Map language IDs to language names
             // Special IDs: -2 = Original (series original language), -1 = Any, 0 = Unknown
             // For sports content, "Original" is always English
             var targetLanguage = langId switch
@@ -1059,7 +1064,7 @@ public class ReleaseEvaluator
         };
     }
 
-    #region Size Validation (Sonarr-style)
+    #region Size Validation
 
     /// <summary>
     /// Validate release size against quality definition limits.
@@ -1116,15 +1121,14 @@ public class ReleaseEvaluator
     }
 
     /// <summary>
-    /// Calculate size score for tiebreaking (Sonarr-style).
+    /// Calculate size score for tiebreaking.
     ///
     /// When PreferredSize is set:
     ///   - Score = negative absolute distance from preferred size (closer = higher score)
     ///   - Rounded to 200MB chunks to prevent minor differences from affecting selection
     ///
     /// When PreferredSize is not set (unlimited):
-    ///   - Score = file size in 200MB chunks (larger = higher score)
-    ///   - This matches Sonarr's default "prefer larger" behavior
+    ///   - Score = file size in 200MB chunks (larger = higher score, i.e., prefer larger)
     /// </summary>
     private long CalculateSizeScore(
         long sizeBytes,
@@ -1135,7 +1139,7 @@ public class ReleaseEvaluator
         var qualityDef = FindMatchingQualityDefinition(quality, qualityDefinitions);
         var sizeMB = sizeBytes / (1024.0 * 1024.0);
 
-        // Round to 200MB chunks (Sonarr behavior)
+        // Round to 200MB chunks
         var roundedSizeMB = Math.Round(sizeMB / SizeComparisonChunkMB) * SizeComparisonChunkMB;
 
         if (qualityDef != null && qualityDef.PreferredSize > 0)
@@ -1157,7 +1161,7 @@ public class ReleaseEvaluator
         }
         else
         {
-            // No preferred size - prefer larger files (Sonarr default)
+            // No preferred size - prefer larger files
             var score = (long)roundedSizeMB;
 
             _logger.LogDebug("[Size Score] {Quality} - Size: {SizeMB:F0}MB (no preferred), Score: {Score} (prefer larger)",
@@ -1184,7 +1188,7 @@ public class ReleaseEvaluator
         if (exactMatch != null)
             return exactMatch;
 
-        // Try matching by building the quality string like Sonarr does
+        // Try matching by building the quality string.
         // Format: "{Source}-{Resolution}" e.g., "WEBDL-1080p", "Bluray-720p"
         var sourceStr = quality.Source switch
         {

@@ -11,7 +11,7 @@ namespace Sportarr.Api.Services;
 /// Allows users to queue many searches (e.g., entire league) without blocking the UI.
 /// Searches execute in parallel (up to MaxConcurrentSearches) while excess requests wait in queue.
 ///
-/// Rate Limiting Strategy (Sonarr-style):
+/// Rate Limiting Strategy:
 /// - Max 3 concurrent event searches
 /// - 5-second delay between starting new event searches (prevents indexer rate limiting)
 /// - Each search hits indexers sequentially with per-indexer rate limiting at HTTP layer
@@ -25,8 +25,8 @@ public class SearchQueueService
     // Max concurrent searches (prevents overwhelming indexers)
     private const int MaxConcurrentSearches = 3;
 
-    // Delay between starting new event searches (Sonarr-style throttling)
-    // This prevents rapid sequential searches from triggering indexer rate limits
+    // Delay between starting new event searches.
+    // Prevents rapid sequential searches from triggering indexer rate limits.
     private const int InterSearchDelayMs = 5000; // 5 seconds between search starts
 
     // How long to keep completed searches before cleanup (reduced from 5 minutes to 2 minutes for memory optimization)
@@ -339,8 +339,8 @@ public class SearchQueueService
     }
 
     /// <summary>
-    /// Process the search queue - runs searches in parallel up to MaxConcurrentSearches.
-    /// Implements Sonarr-style throttling with inter-search delays to prevent rate limiting.
+    /// Process the search queue — runs searches in parallel up to
+    /// MaxConcurrentSearches with inter-search delays to prevent rate limiting.
     /// </summary>
     private async Task ProcessQueueAsync()
     {
@@ -367,8 +367,8 @@ public class SearchQueueService
                 // Wait for available search slot
                 await _searchSemaphore.WaitAsync();
 
-                // SONARR-STYLE THROTTLING: Enforce minimum delay between search starts
-                // This prevents rapid-fire searches from overwhelming indexers
+                // THROTTLING: Enforce minimum delay between search starts
+                // to prevent rapid-fire searches from overwhelming indexers.
                 TimeSpan waitTime;
                 lock (_lastSearchTimeLock)
                 {

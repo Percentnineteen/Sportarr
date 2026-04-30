@@ -32,9 +32,18 @@ public class QBittorrentClient
         {
             if (_customHttpClient == null)
             {
-                var handler = new HttpClientHandler
+                // SocketsHttpHandler (not HttpClientHandler) so we get
+                // PooledConnectionLifetime - without it the handler pins DNS to
+                // the IP resolved on first call and never releases sockets,
+                // exhausting connections after a day of operation.
+                var handler = new SocketsHttpHandler
                 {
-                    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                    SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
+                    }
                 };
                 _customHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(100) };
 
@@ -67,7 +76,7 @@ public class QBittorrentClient
             }
 
             // Test API version
-            var response = await client.GetAsync($"{baseUrl}/api/v2/app/version");
+            using var response = await client.GetAsync($"{baseUrl}/api/v2/app/version");
             if (response.IsSuccessStatusCode)
             {
                 var version = await response.Content.ReadAsStringAsync();
@@ -94,8 +103,8 @@ public class QBittorrentClient
     }
 
     /// <summary>
-    /// Add torrent from URL with detailed result
-    /// SONARR-STYLE: Downloads torrent file bytes first, then sends bytes to qBittorrent.
+    /// Add torrent from URL with detailed result.
+    /// Downloads the torrent file bytes first, then sends the bytes to qBittorrent.
     /// This is critical for Prowlarr URLs which require authentication that qBittorrent doesn't have.
     /// </summary>
     public async Task<AddDownloadResult> AddTorrentWithResultAsync(DownloadClient config, string torrentUrl, string category, string? expectedName = null, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
@@ -110,15 +119,15 @@ public class QBittorrentClient
 
             var client = GetHttpClient(config);
 
-            // For magnet links, pass URL directly to qBittorrent
-            // For torrent URLs (especially Prowlarr), download bytes first then send to qBittorrent
-            // This matches Sonarr's behavior and fixes issues with Prowlarr authentication
+            // For magnet links, pass URL directly to qBittorrent.
+            // For torrent URLs (especially Prowlarr), download bytes first then send to qBittorrent.
+            // Downloading the bytes server-side fixes issues with Prowlarr authentication.
             byte[]? torrentBytes = null;
             string? torrentFilename = null;
 
             if (!torrentUrl.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogInformation("[qBittorrent] Downloading torrent file from URL (Sonarr-style)...");
+                _logger.LogInformation("[qBittorrent] Downloading torrent file from URL...");
 
                 var downloadResult = await DownloadTorrentFileAsync(torrentUrl);
                 if (!downloadResult.IsSuccess)
@@ -169,15 +178,14 @@ public class QBittorrentClient
 
             _logger.LogInformation("[qBittorrent] Sending add request...");
 
-            // NOTE: We do NOT specify savepath - qBittorrent uses its own configured download directory
-            // The category will create a subdirectory within the download client's save path
-            // This matches Sonarr/Radarr behavior
+            // NOTE: We do NOT specify savepath - qBittorrent uses its own configured download directory.
+            // The category will create a subdirectory within the download client's save path.
             var content = new MultipartFormDataContent();
 
             // If we have torrent bytes, send them as file; otherwise send URL (for magnet links)
             if (torrentBytes != null)
             {
-                // Send torrent file bytes - this is the Sonarr approach
+                // Send torrent file bytes
                 var fileContent = new ByteArrayContent(torrentBytes);
                 fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-bittorrent");
                 content.Add(fileContent, "torrents", torrentFilename!);
@@ -197,8 +205,7 @@ public class QBittorrentClient
                 _logger.LogInformation("[qBittorrent] Using directory override: {Directory}", config.Directory);
             }
 
-            // Handle initial state (Started, ForceStarted, Stopped)
-            // This matches Sonarr/Radarr behavior for testing automation
+            // Handle initial state (Started, ForceStarted, Stopped) — useful for testing automation.
             // Note: qBittorrent 4.2+ uses 'stopped' parameter instead of deprecated 'paused'
             var shouldPause = config.InitialState == TorrentInitialState.Stopped;
             content.Add(new StringContent(shouldPause ? "true" : "false"), "stopped");
@@ -221,7 +228,7 @@ public class QBittorrentClient
                 _logger.LogInformation("[qBittorrent] First and last piece priority enabled");
             }
 
-            // Apply per-torrent seed limits from indexer settings (matches Sonarr behavior)
+            // Apply per-torrent seed limits from indexer settings.
             // qBittorrent API: ratioLimit (-2=global, -1=unlimited, >=0=specific limit)
             // qBittorrent API: seedingTimeLimit (-2=global, -1=unlimited, >=0=minutes)
             if (seedRatioLimit.HasValue && seedRatioLimit.Value > 0)
@@ -236,7 +243,7 @@ public class QBittorrentClient
             }
 
             _logger.LogInformation("[qBittorrent] POSTing to {Endpoint}", $"{baseUrl}/api/v2/torrents/add");
-            var response = await client.PostAsync($"{baseUrl}/api/v2/torrents/add", content);
+            using var response = await client.PostAsync($"{baseUrl}/api/v2/torrents/add", content);
             _logger.LogInformation("[qBittorrent] Response status: {StatusCode} ({StatusCodeInt})", response.StatusCode, (int)response.StatusCode);
 
             if (response.IsSuccessStatusCode)
@@ -550,7 +557,7 @@ public class QBittorrentClient
                 return null;
             }
 
-            var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/info");
+            using var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/info");
 
             if (response.IsSuccessStatusCode)
             {
@@ -669,7 +676,7 @@ public class QBittorrentClient
                 return null;
             }
 
-            var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/files?hash={hash}");
+            using var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/files?hash={hash}");
 
             if (response.IsSuccessStatusCode)
             {
@@ -687,9 +694,9 @@ public class QBittorrentClient
     }
 
     /// <summary>
-    /// Get the actual output path for a torrent (Radarr/Sonarr pattern)
-    /// Uses ContentPath if available, otherwise constructs from SavePath + torrent structure
-    /// This is critical for debrid services where ContentPath differs from SavePath
+    /// Get the actual output path for a torrent.
+    /// Uses ContentPath if available, otherwise constructs from SavePath + torrent structure.
+    /// This is critical for debrid services where ContentPath differs from SavePath.
     /// </summary>
     public async Task<string> GetTorrentOutputPathAsync(DownloadClient config, QBittorrentTorrent torrent)
     {
@@ -733,8 +740,8 @@ public class QBittorrentClient
     }
 
     /// <summary>
-    /// Get torrent status for download monitoring
-    /// Maps qBittorrent states to Sportarr status (matches Sonarr implementation)
+    /// Get torrent status for download monitoring.
+    /// Maps qBittorrent states to Sportarr status.
     /// </summary>
     public async Task<DownloadClientStatus?> GetTorrentStatusAsync(DownloadClient config, string hash)
     {
@@ -745,7 +752,34 @@ public class QBittorrentClient
         // Get the actual output path (uses ContentPath or constructs from files)
         var outputPath = await GetTorrentOutputPathAsync(config, torrent);
 
-        // Comprehensive state mapping matching Sonarr's implementation
+        // Decypharr (debrid passthrough) reports state="downloading" while the
+        // upstream debrid service (Real-Debrid, Torbox) is still caching the
+        // torrent server-side. During this phase there's no on-disk progress and
+        // the user sees a misleading "Downloading 0%" forever. Surface a queued
+        // state with a clear message so the UI shows what's actually happening.
+        var isDecypharrClient = config.Type == DownloadClientType.Decypharr ||
+                                config.Type == DownloadClientType.DecypharrUsenet;
+        var lowerState = torrent.State.ToLowerInvariant();
+        if (isDecypharrClient &&
+            (lowerState == "downloading" || lowerState == "forceddl" || lowerState == "stalleddl") &&
+            torrent.Downloaded == 0 &&
+            torrent.Progress < 0.001)
+        {
+            return new DownloadClientStatus
+            {
+                Status = "queued",
+                Progress = 0,
+                Downloaded = 0,
+                Size = torrent.Size,
+                TimeRemaining = null,
+                SavePath = outputPath,
+                ErrorMessage = "Waiting for debrid service to cache torrent (Real-Debrid / Torbox queue)",
+                Ratio = 0,
+                CompletedAt = null
+            };
+        }
+
+        // Comprehensive qBittorrent state mapping.
         // See: https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)#get-torrent-list
         var (status, warningMessage) = torrent.State.ToLowerInvariant() switch
         {
@@ -777,8 +811,8 @@ public class QBittorrentClient
             _ => ("downloading", (string?)null)
         };
 
-        // Handle ETA: qBittorrent returns 8640000 for infinity, negative values for unknown
-        // Sonarr considers anything over 365 days as infinity
+        // Handle ETA: qBittorrent returns 8640000 for infinity, negative values for unknown.
+        // Treat anything over 365 days as infinity.
         const long MaxEtaSeconds = 365 * 24 * 3600; // 1 year
         const long QBittorrentInfinityEta = 8640000;
 
@@ -841,7 +875,7 @@ public class QBittorrentClient
                 new KeyValuePair<string, string>("value", value.ToString().ToLower())
             });
 
-            var response = await client.PostAsync($"{baseUrl}/api/v2/torrents/setForceStart", content);
+            using var response = await client.PostAsync($"{baseUrl}/api/v2/torrents/setForceStart", content);
 
             if (response.IsSuccessStatusCode)
             {
@@ -879,7 +913,7 @@ public class QBittorrentClient
                 new KeyValuePair<string, string>("deleteFiles", deleteFiles.ToString().ToLower())
             });
 
-            var response = await _httpClient.PostAsync($"{baseUrl}/api/v2/torrents/delete", content);
+            using var response = await _httpClient.PostAsync($"{baseUrl}/api/v2/torrents/delete", content);
             return response.IsSuccessStatusCode;
         }
         catch (Exception ex)
@@ -906,7 +940,7 @@ public class QBittorrentClient
                 new KeyValuePair<string, string>("category", category)
             });
 
-            var response = await _httpClient.PostAsync($"{baseUrl}/api/v2/torrents/setCategory", content);
+            using var response = await _httpClient.PostAsync($"{baseUrl}/api/v2/torrents/setCategory", content);
             return response.IsSuccessStatusCode;
         }
         catch (Exception ex)
@@ -917,8 +951,8 @@ public class QBittorrentClient
     }
 
     /// <summary>
-    /// Download torrent file from URL (Sonarr-style approach)
-    /// This is critical for Prowlarr URLs which require the request to come from Sportarr,
+    /// Download torrent file from URL.
+    /// Critical for Prowlarr URLs which require the request to come from Sportarr,
     /// not from qBittorrent which doesn't have Prowlarr's authentication.
     /// </summary>
     private async Task<TorrentDownloadResult> DownloadTorrentFileAsync(string torrentUrl)
@@ -953,7 +987,7 @@ public class QBittorrentClient
             var handler = new HttpClientHandler { AllowAutoRedirect = false };
             using var downloadClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
 
-            // Set headers similar to Sonarr - Accept torrent content
+            // Accept torrent content type so indexers serve us the right blob
             var request = new HttpRequestMessage(HttpMethod.Get, uri);
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/x-bittorrent"));
             request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("*/*", 0.8));
@@ -1140,10 +1174,10 @@ public class QBittorrentClient
     }
 
     /// <summary>
-    /// Pre-validate a torrent URL by fetching headers to check if it returns valid torrent data
-    /// NOTE: This is OPTIONAL validation. Sonarr/Radarr do NOT pre-validate URLs - they let
-    /// the download client handle errors. We do light validation to provide better error messages,
-    /// but we NEVER block downloads due to validation failures - we let qBittorrent try anyway.
+    /// Pre-validate a torrent URL by fetching headers to check if it returns valid torrent data.
+    /// NOTE: This is OPTIONAL validation. We do light validation to provide better error
+    /// messages, but we NEVER block downloads due to validation failures — we let
+    /// qBittorrent try anyway.
     /// </summary>
     private async Task<TorrentUrlValidationResult> ValidateTorrentUrlAsync(string torrentUrl)
     {
@@ -1188,9 +1222,8 @@ public class QBittorrentClient
             long contentLength = 0;
             bool needsPartialGet = false;
 
-            // Check for HTTP errors from HEAD request
-            // NOTE: Unlike before, we now NEVER block downloads based on HEAD response
-            // Sonarr doesn't pre-validate at all - we only log warnings for user info
+            // Check for HTTP errors from HEAD request.
+            // We NEVER block downloads based on HEAD response — only log warnings for user info.
             if (!headResponse.IsSuccessStatusCode)
             {
                 var statusCode = (int)headResponse.StatusCode;
@@ -1362,7 +1395,7 @@ public class QBittorrentClient
                 new KeyValuePair<string, string>("password", password ?? "")
             });
 
-            var response = await client.PostAsync(loginUrl, content);
+            using var response = await client.PostAsync(loginUrl, content);
             var responseBody = await response.Content.ReadAsStringAsync();
 
             _logger.LogDebug("[qBittorrent] Login response: Status={StatusCode}", response.StatusCode);
@@ -1420,7 +1453,7 @@ public class QBittorrentClient
                 new KeyValuePair<string, string>("hashes", hash)
             });
 
-            var response = await _httpClient.PostAsync($"{baseUrl}/api/v2/torrents/{action}", content);
+            using var response = await _httpClient.PostAsync($"{baseUrl}/api/v2/torrents/{action}", content);
             return response.IsSuccessStatusCode;
         }
         catch (Exception ex)
@@ -1437,7 +1470,7 @@ public class QBittorrentClient
             var client = GetHttpClient(config);
 
             // Check if category already exists before creating - preserves user's save path and TMM settings
-            var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/categories");
+            using var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/categories");
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();

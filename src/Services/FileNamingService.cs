@@ -4,8 +4,7 @@ using Sportarr.Api.Models;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Handles file and folder naming with token replacement
-/// Based on Sonarr/Radarr naming conventions
+/// Handles file and folder naming with token replacement.
 /// </summary>
 public class FileNamingService
 {
@@ -173,7 +172,7 @@ public class FileNamingService
             { "{Release Group}", tokens.ReleaseGroup },
             { "{Original Title}", tokens.OriginalTitle },
             { "{Original Filename}", tokens.OriginalFilename },
-            // Plex TV show structure tokens (S## and E## format for Plex/Sonarr compatibility)
+            // Plex TV show structure tokens (S## and E## format)
             { "{Series}", tokens.Series },
             { "{Season}", FormatSeasonNumber(tokens.Season) },  // S01, S02, S2025, etc
             { "{Episode}", FormatEpisodeNumber(tokens.Episode) },  // E01, E02, etc
@@ -345,7 +344,7 @@ public class FileNamingService
             "{Event Date Year}",
             "{Event Date Month}",
             "{Event Date Day}",
-            "{Air Date}",       // Alias for Event Date (Sonarr compatibility)
+            "{Air Date}",       // Alias for Event Date
             "{Air Date Year}",
             "{Air Date Month}",
             "{Air Date Day}",

@@ -5,8 +5,8 @@ using Sportarr.Api.Models;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Background service to verify file existence and update event status
-/// Similar to Sonarr's disk scan functionality
+/// Background service that verifies file existence and updates event status,
+/// and discovers new files dropped into root folders outside the import flow.
 /// </summary>
 public class DiskScanService : BackgroundService, IAsyncDisposable
 {
@@ -163,7 +163,7 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
             {
                 if (exists)
                 {
-                    _logger.LogInformation("[Disk Scan] File found again: {Path} (Event: {EventTitle})",
+                    _logger.LogDebug("[Disk Scan] File found again: {Path} (Event: {EventTitle})",
                         file.FilePath, file.EventTitle);
                     filesToMarkFound.Add(file.Id);
                     totalFound++;
@@ -319,7 +319,7 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                     // Update to point to an existing file
                     eventsToRestore.Add((evt.Id, fileStatus.FirstExistingFile.FilePath,
                         fileStatus.FirstExistingFile.Size, fileStatus.FirstExistingFile.Quality ?? ""));
-                    _logger.LogInformation("Event {EventTitle} file restored: {Path}", evt.Title, fileStatus.FirstExistingFile.FilePath);
+                    _logger.LogDebug("Event {EventTitle} file restored: {Path}", evt.Title, fileStatus.FirstExistingFile.FilePath);
                 }
 
                 updatedCount++;
@@ -388,11 +388,25 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
             .ToListAsync(cancellationToken);
         foreach (var p in eventFilePaths) trackedPaths.Add(p);
 
-        // Also exclude paths already in pending imports
+        // Exclude paths the user is currently being asked about (open PendingImport
+        // rows) so we don't re-add a duplicate row each scan while it's awaiting
+        // resolution.
         var pendingPaths = new HashSet<string>(
             await db.PendingImports
-                .Where(pi => pi.Status == PendingImportStatus.Pending)
                 .Select(pi => pi.FilePath)
+                .ToListAsync(cancellationToken),
+            StringComparer.OrdinalIgnoreCase);
+
+        // Exclude paths the user has blocklisted. When a user rejects a
+        // disk-discovered import via /api/pending-imports/{id}/remove-from-client
+        // or /reject, the row is hard-deleted and a Blocklist entry is written
+        // with FilePath set. Without honoring it here the next scan would just
+        // re-discover the same file and recreate the PendingImport, producing
+        // an infinite loop where Remove never sticks.
+        var blocklistedPaths = new HashSet<string>(
+            await db.Blocklist
+                .Where(b => b.FilePath != null)
+                .Select(b => b.FilePath!)
                 .ToListAsync(cancellationToken),
             StringComparer.OrdinalIgnoreCase);
 
@@ -418,8 +432,8 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                 {
                     if (cancellationToken.IsCancellationRequested) break;
 
-                    // Skip if already tracked or already pending
-                    if (trackedPaths.Contains(filePath) || pendingPaths.Contains(filePath))
+                    // Skip if already tracked, already pending, or blocklisted
+                    if (trackedPaths.Contains(filePath) || pendingPaths.Contains(filePath) || blocklistedPaths.Contains(filePath))
                         continue;
 
                     try
@@ -483,7 +497,7 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                         pendingPaths.Add(filePath); // Prevent duplicates within this scan
                         discoveredCount++;
 
-                        _logger.LogInformation("[Disk Scan] Discovered untracked file: {Path} (Confidence: {Confidence}%)",
+                        _logger.LogDebug("[Disk Scan] Discovered untracked file: {Path} (Confidence: {Confidence}%)",
                             filePath, confidence);
                     }
                     catch (Exception ex)

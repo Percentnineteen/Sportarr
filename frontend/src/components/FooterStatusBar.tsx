@@ -194,116 +194,115 @@ function FooterStatusBar() {
     };
   }, []);
 
-  // Track download queue changes for state notifications
-  // Also shows current active downloads on app startup/refresh
+  // Track download queue and surface the most active item in the footer.
+  //
+  // Status meanings: 0=Queued/Grabbed, 1=Downloading, 6=Importing, 7=Imported,
+  // 8=ImportPending (import failed and will retry).
+  //
+  // Previous version only updated on status *transitions*. That broke when an
+  // item got stuck in the import-retry loop (status oscillates 6→8→4→8 forever)
+  // because the change detector only fires on transitions *into* status 6, not
+  // on 8→6 retries, and never fires for 4 (Failed) at all. The first event to
+  // hit status 6 became permanent footer text — a new "imported" notification
+  // would briefly overwrite it, but after the 5-second auto-clear it was either
+  // empty or back to the stuck importer. New events that go 1→6→7 between polls
+  // can also be missed entirely if the 6 phase falls between the 3-second
+  // queue refresh ticks.
+  //
+  // The fix: each tick, *recompute* the displayed notification from the current
+  // queue state. Pick the most active item (priority: Importing > Downloading >
+  // Grabbed) and show it. We still preserve the "Successfully imported X" toast
+  // for 5 seconds when an item transitions to status 7 — that's a discrete
+  // event the user wants to see — but the live "Importing X" / "Downloading X"
+  // label always reflects current reality.
   useEffect(() => {
     if (!downloadQueue) return;
 
-    const isFirstLoad = seenDownloadStates.current.size === 0;
-
-    // On first load, show any active downloads (Downloading or Importing) immediately
-    // This ensures users see ongoing activity after app restart
-    if (isFirstLoad && downloadQueue.length > 0) {
-      // Find the most important active item to show
-      // Priority: Importing (6) > Downloading (1) > Grabbed (0)
-      const importingItem = downloadQueue.find(item => item.status === 6);
-      const downloadingItem = downloadQueue.find(item => item.status === 1);
-      const grabbedItem = downloadQueue.find(item => item.status === 0);
-      const activeItem = importingItem || downloadingItem || grabbedItem;
-
-      if (activeItem) {
-        let notificationStatus: DownloadNotification['status'];
-        if (activeItem.status === 6) {
-          notificationStatus = 'importing';
-        } else if (activeItem.status === 1) {
-          notificationStatus = 'downloading';
-        } else {
-          notificationStatus = 'grabbed';
-        }
-
-        setDownloadNotification({
-          id: activeItem.id,
-          title: activeItem.event?.title || activeItem.title,
-          quality: activeItem.quality,
-          status: notificationStatus,
-          timestamp: Date.now(),
-        });
-
-        // Don't auto-clear on startup - let it persist until state changes
-        // This keeps showing active download until it completes or changes
+    // Detect 6→7 transitions so we can show the "Imported X" toast briefly.
+    // Iterate before we replace the seenDownloadStates map.
+    let importedTransitionItem: typeof downloadQueue[number] | null = null;
+    for (const item of downloadQueue) {
+      const prevStatus = seenDownloadStates.current.get(item.id);
+      if (item.status === 7 && prevStatus !== undefined && prevStatus !== 7) {
+        importedTransitionItem = item;
+        break; // first one is fine
       }
+    }
 
-      // Record all current states
-      downloadQueue.forEach(item => {
-        seenDownloadStates.current.set(item.id, item.status);
+    // Refresh the seen-states map from the current snapshot so the next tick's
+    // transition detection has accurate "previous" values.
+    const nextSeen = new Map<number, number>();
+    for (const item of downloadQueue) {
+      nextSeen.set(item.id, item.status);
+    }
+    seenDownloadStates.current = nextSeen;
+
+    // If we just observed an import-success transition, show that toast and
+    // schedule it to clear after 5s. Don't return — the toast may overlay an
+    // active item, which is fine; the toast wins for the 5s window.
+    if (importedTransitionItem) {
+      setDownloadNotification({
+        id: importedTransitionItem.id,
+        title: importedTransitionItem.event?.title || importedTransitionItem.title,
+        quality: importedTransitionItem.quality,
+        status: 'imported',
+        timestamp: Date.now(),
       });
+      if (downloadTimeoutRef.current) {
+        clearTimeout(downloadTimeoutRef.current);
+      }
+      downloadTimeoutRef.current = setTimeout(() => {
+        setDownloadNotification(null);
+      }, 5000);
       return;
     }
 
-    // Check for status changes (normal operation after first load)
-    for (const item of downloadQueue) {
-      const prevStatus = seenDownloadStates.current.get(item.id);
+    // Pick the most active item currently in the queue. Priority:
+    // 1. Importing (6) — most recently entered Importing state wins on ties.
+    //    We approximate "most recent" by Id descending since the queue is
+    //    ordered Added-DESC by the API, so highest id ≈ most recently added.
+    // 2. Downloading (1) — same tiebreaker.
+    // 3. Grabbed (0)    — same tiebreaker.
+    //
+    // The Id-descending tiebreaker is what fixes the "stuck on TUFLF" bug:
+    // older stuck items don't dominate the footer just because they were added
+    // first.
+    const sortedQueue = [...downloadQueue].sort((a, b) => b.id - a.id);
+    const importing = sortedQueue.find(i => i.status === 6);
+    const downloading = sortedQueue.find(i => i.status === 1);
+    const grabbed = sortedQueue.find(i => i.status === 0);
+    const activeItem = importing ?? downloading ?? grabbed ?? null;
 
-      // New item or status changed
-      if (prevStatus === undefined || prevStatus !== item.status) {
-        seenDownloadStates.current.set(item.id, item.status);
-
-        // Status meanings: 0=Queued/Grabbed, 1=Downloading, 6=Importing, 7=Imported
-        let notificationStatus: DownloadNotification['status'] | null = null;
-
-        if (prevStatus === undefined && item.status === 0) {
-          notificationStatus = 'grabbed';
-        } else if (item.status === 1 && prevStatus !== 1) {
-          notificationStatus = 'downloading';
-        } else if (item.status === 6 && prevStatus !== 6) {
-          notificationStatus = 'importing';
-        } else if (item.status === 7 && prevStatus !== 7) {
-          notificationStatus = 'imported';
-        }
-
-        if (notificationStatus) {
-          setDownloadNotification({
-            id: item.id,
-            title: item.event?.title || item.title,
-            quality: item.quality,
-            status: notificationStatus,
-            timestamp: Date.now(),
-          });
-
-          // Clear notification after 5 seconds for state changes
-          // (but not for 'imported' which should show briefly then clear)
-          if (downloadTimeoutRef.current) {
-            clearTimeout(downloadTimeoutRef.current);
-          }
-
-          // Only auto-clear notifications for transient states
-          // Imported clears after 5s, others persist until next state change
-          if (notificationStatus === 'imported') {
-            downloadTimeoutRef.current = setTimeout(() => {
-              setDownloadNotification(null);
-            }, 5000);
-          }
-        }
-      }
-      // Removed: No longer updating progress % in real-time to reduce re-renders
-      // The status bar now just shows "Downloading..." without percentage updates
-    }
-
-    // Clean up removed items from tracking
-    const currentIds = new Set(downloadQueue.map(item => item.id));
-    seenDownloadStates.current.forEach((_, id) => {
-      if (!currentIds.has(id)) {
-        seenDownloadStates.current.delete(id);
-      }
-    });
-
-    // If current notification item is no longer in queue (removed), clear the notification
-    if (downloadNotification && !currentIds.has(downloadNotification.id)) {
-      // Keep "imported" notification for a bit, clear others immediately
-      if (downloadNotification.status !== 'imported') {
+    if (!activeItem) {
+      // Nothing active — clear any stale notification (unless it's the
+      // "imported" toast still in its display window).
+      if (downloadNotification && downloadNotification.status !== 'imported') {
         setDownloadNotification(null);
       }
+      return;
     }
+
+    const notificationStatus: DownloadNotification['status'] =
+      activeItem.status === 6 ? 'importing' :
+      activeItem.status === 1 ? 'downloading' :
+      'grabbed';
+
+    // Avoid pointless re-renders: only update if the displayed item or its
+    // status actually changed. The 5s "imported" toast set above doesn't
+    // reach this branch (we returned early).
+    if (downloadNotification &&
+        downloadNotification.id === activeItem.id &&
+        downloadNotification.status === notificationStatus) {
+      return;
+    }
+
+    setDownloadNotification({
+      id: activeItem.id,
+      title: activeItem.event?.title || activeItem.title,
+      quality: activeItem.quality,
+      status: notificationStatus,
+      timestamp: Date.now(),
+    });
   }, [downloadQueue, downloadNotification]);
 
   // Track tasks

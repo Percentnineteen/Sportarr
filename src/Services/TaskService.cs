@@ -7,8 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Service for managing the task queue and execution
-/// Similar to Sonarr/Radarr command queue system
+/// Service for managing the task queue and execution.
 /// </summary>
 public class TaskService : ITaskService
 {
@@ -58,7 +57,12 @@ public class TaskService : ITaskService
     /// </summary>
     private async Task ProcessQueueAsync()
     {
-        // Prevent multiple queue processors running at once
+        // Prevent multiple queue processors running at once. The lock is held
+        // for the duration of the drain loop, so we must NOT re-enter from
+        // ExecuteTaskAsync's finally — instead the loop body picks up the next
+        // queued task itself. Re-entering would deadlock the queue: the
+        // recursive call would see the lock still held (we haven't returned
+        // to release it yet), bail, and nobody else would re-trigger us.
         if (!await _taskLock.WaitAsync(0))
         {
             return;
@@ -66,35 +70,44 @@ public class TaskService : ITaskService
 
         try
         {
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<SportarrDbContext>();
-
-            // Check if there's already a running task
-            var runningTask = await db.Tasks
-                .Where(t => t.Status == Models.TaskStatus.Running)
-                .FirstOrDefaultAsync();
-
-            if (runningTask != null)
+            while (true)
             {
-                _logger.LogDebug("[TASK] Task already running: {Name}", runningTask.Name);
-                return;
+                int nextTaskId;
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<SportarrDbContext>();
+
+                    // Defensive: a previous task that crashed or was killed
+                    // mid-flight could leave a Running row. We don't reset it
+                    // here — that's a separate recovery concern — but we do
+                    // refuse to start a second concurrent task.
+                    var runningTask = await db.Tasks
+                        .Where(t => t.Status == Models.TaskStatus.Running)
+                        .FirstOrDefaultAsync();
+
+                    if (runningTask != null)
+                    {
+                        _logger.LogDebug("[TASK] Task already running: {Name}", runningTask.Name);
+                        return;
+                    }
+
+                    var nextTask = await db.Tasks
+                        .Where(t => t.Status == Models.TaskStatus.Queued)
+                        .OrderByDescending(t => t.Priority)
+                        .ThenBy(t => t.Queued)
+                        .FirstOrDefaultAsync();
+
+                    if (nextTask == null)
+                    {
+                        _logger.LogDebug("[TASK] No queued tasks to process");
+                        return;
+                    }
+
+                    nextTaskId = nextTask.Id;
+                }
+
+                await ExecuteTaskAsync(nextTaskId);
             }
-
-            // Get next queued task by priority
-            var nextTask = await db.Tasks
-                .Where(t => t.Status == Models.TaskStatus.Queued)
-                .OrderByDescending(t => t.Priority)
-                .ThenBy(t => t.Queued)
-                .FirstOrDefaultAsync();
-
-            if (nextTask == null)
-            {
-                _logger.LogDebug("[TASK] No queued tasks to process");
-                return;
-            }
-
-            // Execute the task
-            await ExecuteTaskAsync(nextTask.Id);
         }
         finally
         {
@@ -168,8 +181,10 @@ public class TaskService : ITaskService
             await db.SaveChangesAsync();
             _cancellationTokens.TryRemove(taskId, out _);
 
-            // Process next task in queue
-            _ = ProcessQueueAsync();
+            // Don't recursively kick the queue here — the outer ProcessQueueAsync
+            // loop is still holding _taskLock and will pick up the next queued
+            // task on its next iteration. A re-entrant call would only see the
+            // held lock and bail, leaving the queue stuck (the bug this fixes).
         }
     }
 
@@ -323,6 +338,40 @@ public class TaskService : ITaskService
     /// <summary>
     /// Clean up old completed tasks
     /// </summary>
+    public async Task RecoverAndResumeAsync()
+    {
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<SportarrDbContext>();
+
+            // Any task still marked Running at startup belongs to a previous
+            // process that died before it could mark the row Completed/Failed.
+            // Leaving it Running blocks the queue (ProcessQueueAsync refuses to
+            // start a second concurrent task), so flip it back to Queued. We
+            // prefer requeue over fail so legitimate work gets retried after
+            // a restart.
+            var orphans = await db.Tasks
+                .Where(t => t.Status == Models.TaskStatus.Running)
+                .ToListAsync();
+
+            foreach (var orphan in orphans)
+            {
+                orphan.Status = Models.TaskStatus.Queued;
+                orphan.Started = null;
+                orphan.Progress = 0;
+                _logger.LogWarning("[TASK] Requeuing orphan Running task left over from prior process: {Name} (ID: {TaskId})",
+                    orphan.Name, orphan.Id);
+            }
+
+            if (orphans.Count > 0)
+            {
+                await db.SaveChangesAsync();
+            }
+        }
+
+        _ = ProcessQueueAsync();
+    }
+
     public async Task CleanupOldTasksAsync(int keepCount = 100)
     {
         using var scope = _scopeFactory.CreateScope();

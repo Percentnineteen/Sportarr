@@ -1,8 +1,8 @@
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Import List for automated event discovery from external sources
-/// Similar to Sonarr's Import Lists feature - discovers events from RSS feeds, APIs, calendars
+/// Import List for automated event discovery from external sources.
+/// Discovers events from RSS feeds, APIs, and calendars.
 /// </summary>
 public class ImportList
 {

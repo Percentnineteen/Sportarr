@@ -6,8 +6,8 @@ using System.Text.RegularExpressions;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Handles importing completed downloads to the media library
-/// Implements Sonarr/Radarr-style import process:
+/// Handles importing completed downloads to the media library.
+/// Import pipeline:
 /// 1. Translate remote path to local path (if needed)
 /// 2. Scan directory for video files
 /// 3. Parse filename to match event
@@ -181,8 +181,8 @@ public class ImportService
     }
 
     /// <summary>
-    /// Process a path for import (scan and import video files)
-    /// Follows Radarr/Sonarr pattern for path processing
+    /// Process a path for import: scan the directory for video files and
+    /// hand each one to the per-file import pipeline.
     /// </summary>
     public async Task<List<CompletedDownloadImportResult>> ProcessPathAsync(string path, int? eventId = null)
     {

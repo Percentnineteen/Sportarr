@@ -91,6 +91,13 @@ const isGambling = (sport: string) => {
   return sport.toLowerCase() === 'gambling';
 };
 
+// Badminton (BWF World Tour), Table Tennis, Snooker are individual-player racket/cue sports
+// Tournaments feature individual players, not teams, so team filtering doesn't apply
+const isIndividualRacketOrCueSport = (sport: string) => {
+  const s = sport.toLowerCase();
+  return s === 'badminton' || s === 'table tennis' || s === 'snooker';
+};
+
 // Check if tennis league is individual-based (ATP, WTA tours) vs team-based (Fed Cup, Davis Cup, Olympics)
 // Individual tennis leagues don't have meaningful team data - all events should sync
 const isIndividualTennis = (sport: string, leagueName: string) => {
@@ -121,7 +128,11 @@ const usesFightingEventTypes = (sport: string, leagueName: string) => {
 // Motorsports do NOT use multi-part - each session is a separate event from Sportarr API
 const getPartOptions = (sport: string): string[] => {
   if (isFightingSport(sport)) {
-    return ['Early Prelims', 'Prelims', 'Main Card'];
+    // Order matches PartNumber on the backend (EventPartDetector.CardSegment).
+    // Post Show only exists on PPV-style events; it's listed here so the
+    // user can opt out of it at the league level. Fight Night events
+    // ignore it because their per-event partStatuses don't include it.
+    return ['Early Prelims', 'Prelims', 'Main Card', 'Post Show'];
   }
   // Motorsports and other sports don't have parts
   return [];
@@ -180,7 +191,7 @@ export default function AddLeagueModal({ league, isOpen, onClose, onAdd, isAddin
       if (!response.ok) throw new Error('Failed to fetch teams');
       return response.json();
     },
-    enabled: isOpen && !!league && !isMotorsport(league.strSport) && !isGolf(league.strSport) && !isDarts(league.strSport) && !isClimbing(league.strSport) && !isGambling(league.strSport) && !isIndividualTennis(league.strSport, league.strLeague),
+    enabled: isOpen && !!league && !isMotorsport(league.strSport) && !isGolf(league.strSport) && !isDarts(league.strSport) && !isClimbing(league.strSport) && !isGambling(league.strSport) && !isIndividualRacketOrCueSport(league.strSport) && !isIndividualTennis(league.strSport, league.strLeague),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -622,7 +633,8 @@ export default function AddLeagueModal({ league, isOpen, onClose, onAdd, isAddin
     { token: '{Round}', description: 'Round number (zero-padded, e.g., 01)' },
     { token: '{Round:0}', description: 'Round number (no padding, e.g., 1)' },
     { token: '{Week}', description: 'Week number' },
-    { token: '{EventTitle}', description: 'Event title' },
+    { token: '{EventTitle}', description: 'Event title (raw)' },
+    { token: '{EventName}', description: 'Event title with fighter matchup stripped (e.g. "ONE Friday Fights 150")' },
     { token: '{HomeTeam}', description: 'Home team' },
     { token: '{AwayTeam}', description: 'Away team' },
     { token: '{Season}', description: 'Season' },
@@ -671,8 +683,8 @@ export default function AddLeagueModal({ league, isOpen, onClose, onAdd, isAddin
   const selectedSessionTypesCount = monitoredSessionTypes.size;
   const selectedEventTypesCount = monitoredEventTypes.size;
   // Show team selection for leagues with meaningful team data
-  // Skip for: Motorsport (no home/away teams), Darts (individual players), Climbing (individual climbers), Gambling (individual poker players), individual Tennis (ATP, WTA), and UFC-style fighting leagues (use event types instead)
-  const showTeamSelection = league ? !isMotorsport(league.strSport) && !isGolf(league.strSport) && !isDarts(league.strSport) && !isClimbing(league.strSport) && !isGambling(league.strSport) && !isIndividualTennis(league.strSport, league.strLeague) && !usesFightingEventTypes(league.strSport, league.strLeague) : false;
+  // Skip for: Motorsport (no home/away teams), Darts (individual players), Climbing (individual climbers), Gambling (individual poker players), Badminton/Table Tennis/Snooker (individual racket/cue players), individual Tennis (ATP, WTA), and UFC-style fighting leagues (use event types instead)
+  const showTeamSelection = league ? !isMotorsport(league.strSport) && !isGolf(league.strSport) && !isDarts(league.strSport) && !isClimbing(league.strSport) && !isGambling(league.strSport) && !isIndividualRacketOrCueSport(league.strSport) && !isIndividualTennis(league.strSport, league.strLeague) && !usesFightingEventTypes(league.strSport, league.strLeague) : false;
   // Only fighting sports use multi-part episodes
   const showPartsSelection = config?.enableMultiPartEpisodes && league && isFightingSport(league.strSport);
   // Show session type selection for motorsports

@@ -6,9 +6,8 @@ using System.Text.RegularExpressions;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Matches external downloads to events using filename parsing and fuzzy matching
-/// Calculates confidence scores and suggests best event matches
-/// Similar to Sonarr's series/episode matching for manual imports
+/// Matches external downloads to events using filename parsing and fuzzy matching.
+/// Calculates confidence scores and suggests best event matches for manual imports.
 /// </summary>
 public class ImportMatchingService
 {

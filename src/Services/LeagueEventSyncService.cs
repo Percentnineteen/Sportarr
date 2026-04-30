@@ -5,8 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Service for syncing events from Sportarr API API to populate league events
-/// Similar to Sonarr's series monitoring and episode discovery
+/// Service for syncing events from Sportarr API to populate league events.
 /// </summary>
 public class LeagueEventSyncService
 {
@@ -79,13 +78,14 @@ public class LeagueEventSyncService
         // - Darts: matches are between individual players, not teams
         // - Climbing: individual climbers compete, not teams
         // - Gambling (Poker, WSOP): individual players compete in tournaments, not teams
+        // - Badminton (BWF World Tour): individual players compete in tournaments, not teams
+        // - Table Tennis: individual players compete in tournaments, not teams
+        // - Snooker: individual players compete in tournaments, not teams
         // - Individual Tennis (ATP, WTA): matches are between players, not teams
         //   Note: Team-based tennis (Fed Cup, Davis Cup, Olympics) still needs team filtering
         var monitoredTeamIds = new HashSet<string>();
-        var sportsWithoutTeamFiltering = new[] { "Fighting", "Cycling", "Motorsport", "Golf", "Darts", "Climbing", "Gambling" };
-        var isIndividualTennis = IsIndividualTennisLeague(league.Sport, league.Name);
 
-        if (!sportsWithoutTeamFiltering.Contains(league.Sport, StringComparer.OrdinalIgnoreCase) && !isIndividualTennis)
+        if (!LeagueSportRules.IsTeamlessSport(league.Sport, league.Name))
         {
             monitoredTeamIds = league.MonitoredTeams
                 .Where(lt => lt.Monitored && lt.Team != null)
@@ -104,10 +104,6 @@ public class LeagueEventSyncService
             {
                 _logger.LogInformation("[League Event Sync] No team filtering - will sync all events in league");
             }
-        }
-        else if (isIndividualTennis)
-        {
-            _logger.LogInformation("[League Event Sync] Individual tennis league (ATP/WTA) - team filtering disabled (matches between players, not teams)");
         }
         else
         {
@@ -283,7 +279,7 @@ public class LeagueEventSyncService
                     }
                     else
                     {
-                        _logger.LogInformation("[League Event Sync] Removing cancelled event '{Title}' (S{Season}) - no longer in API schedule",
+                        _logger.LogDebug("[League Event Sync] Removing cancelled event '{Title}' (S{Season}) - no longer in API schedule",
                             orphan.Title, season);
                     }
                     _db.Events.Remove(orphan);
@@ -428,6 +424,14 @@ public class LeagueEventSyncService
                 }
             }
 
+            // Broadcast date (separate from EventDate UTC). Backfills existing
+            // events that pre-date this column and keeps it current on re-sync.
+            if (apiEvent.BroadcastDate.HasValue && existingEvent.BroadcastDate != apiEvent.BroadcastDate)
+            {
+                existingEvent.BroadcastDate = apiEvent.BroadcastDate;
+                needsUpdate = true;
+            }
+
             // Event Title (triggers file rename if changed)
             if (existingEvent.Title != apiEvent.Title)
             {
@@ -569,7 +573,7 @@ public class LeagueEventSyncService
         }
 
         // Event doesn't exist - create new one
-        _logger.LogInformation("[League Event Sync] Creating new event: {EventTitle}", apiEvent.Title);
+        _logger.LogDebug("[League Event Sync] Creating new event: {EventTitle}", apiEvent.Title);
 
         // Handle team relationships (for team sports)
         int? homeTeamId = null;
@@ -621,6 +625,7 @@ public class LeagueEventSyncService
                 apiEpisodeMap, apiEvent.ExternalId, league.Id, apiEvent.Season, apiEvent.EventDate),
             Round = apiEvent.Round,
             EventDate = apiEvent.EventDate,
+            BroadcastDate = apiEvent.BroadcastDate,
             Venue = apiEvent.Venue,
             Location = apiEvent.Location,
             Broadcast = apiEvent.Broadcast,
@@ -654,14 +659,14 @@ public class LeagueEventSyncService
         _db.Events.Add(newEvent);
         result.NewCount++;
 
-        _logger.LogInformation("[League Event Sync] Added event: {EventTitle} on {EventDate}",
+        _logger.LogDebug("[League Event Sync] Added event: {EventTitle} on {EventDate}",
             newEvent.Title, newEvent.EventDate.ToString("yyyy-MM-dd"));
     }
 
     /// <summary>
-    /// Generate comprehensive season range for a sport
-    /// Returns ALL seasons to ensure complete event history is discovered
-    /// Similar to Sonarr showing all seasons of a TV show, not just recent ones
+    /// Generate comprehensive season range for a sport.
+    /// Returns ALL seasons so the full event history is discovered, not just
+    /// the most recent ones.
     /// </summary>
     private List<string> GenerateSeasonRange(string sport)
     {
@@ -931,24 +936,6 @@ public class LeagueEventSyncService
         return false;
     }
 
-    /// <summary>
-    /// Check if a tennis league is individual-based (ATP, WTA) vs team-based (Fed Cup, Davis Cup, Olympics)
-    /// Individual tennis leagues don't have meaningful team data - matches are between players, not teams
-    /// </summary>
-    private static bool IsIndividualTennisLeague(string sport, string leagueName)
-    {
-        if (!sport.Equals("Tennis", StringComparison.OrdinalIgnoreCase)) return false;
-
-        var nameLower = leagueName.ToLowerInvariant();
-
-        // Team-based tennis competitions - these DO need team filtering
-        var teamBased = new[] { "fed cup", "davis cup", "olympic", "billie jean king" };
-        if (teamBased.Any(t => nameLower.Contains(t))) return false;
-
-        // Individual tours - no team selection needed, sync all events
-        var individualTours = new[] { "atp", "wta" };
-        return individualTours.Any(t => nameLower.Contains(t));
-    }
 }
 
 /// <summary>

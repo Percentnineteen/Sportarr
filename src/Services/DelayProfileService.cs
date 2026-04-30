@@ -5,8 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Service for evaluating delay profiles and protocol priority
-/// Implements Sonarr/Radarr-style delay profile logic
+/// Service for evaluating delay profiles and protocol priority.
 /// </summary>
 public class DelayProfileService
 {
@@ -51,7 +50,7 @@ public class DelayProfileService
         }
 
         // Tag-based delay profile matching: find the first profile whose tags
-        // match the event's league tags (Sonarr-style tag intersection)
+        // match the event's league tags (tag intersection).
         var league = evt.LeagueId.HasValue
             ? await _db.Leagues.FindAsync(evt.LeagueId.Value)
             : null;
@@ -149,8 +148,8 @@ public class DelayProfileService
     }
 
     /// <summary>
-    /// Select best release considering delay profile and protocol priority
-    /// Uses Sonarr's prioritization order: Quality > CustomFormatScore > Protocol > Seeders/Age > Size
+    /// Select best release considering delay profile and protocol priority.
+    /// Prioritization order: Quality > CustomFormatScore > Protocol > Seeders/Age > Size.
     /// </summary>
     public ReleaseSearchResult? SelectBestReleaseWithDelayProfile(
         List<ReleaseSearchResult> releases,
@@ -224,11 +223,11 @@ public class DelayProfileService
             return null;
         }
 
-        _logger.LogInformation("[Delay Profile] Prioritizing {Count} releases using Sonarr logic " +
+        _logger.LogInformation("[Delay Profile] Prioritizing {Count} releases " +
             "(Quality > CF Score > Protocol > Seeders/Age > Size)",
             qualityFiltered.Count);
 
-        // Sonarr's prioritization order (implemented as multi-level sort):
+        // Prioritization order (implemented as multi-level sort):
         // 1. Quality rank (higher = better) - using QualityParser for proper group matching
         // 2. Custom Format Score (higher = better)
         // 3. Protocol preference (preferred protocol first)

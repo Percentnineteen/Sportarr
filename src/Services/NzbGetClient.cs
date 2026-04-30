@@ -31,9 +31,14 @@ public class NzbGetClient
         {
             if (_customHttpClient == null)
             {
-                var handler = new HttpClientHandler
+                var handler = new SocketsHttpHandler
                 {
-                    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                    SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
+                    }
                 };
                 _customHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(100) };
             }
@@ -82,7 +87,7 @@ public class NzbGetClient
             _logger.LogInformation("[NZBGet] Fetching NZB from: {Url}", nzbUrl);
 
             // Fetch the NZB file as raw bytes to preserve encoding
-            var response = await _httpClient.GetAsync(nzbUrl);
+            using var response = await _httpClient.GetAsync(nzbUrl);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("[NZBGet] Failed to fetch NZB: HTTP {StatusCode}. Falling back to appendurl mode.", response.StatusCode);
@@ -359,6 +364,75 @@ public class NzbGetClient
     }
 
     /// <summary>
+    /// List all downloads (queue + history) matching a category for external download detection.
+    /// Mirrors SABnzbd's behavior so the EnhancedDownloadMonitorService can detect NZBs
+    /// added directly to NZBGet outside of Sportarr.
+    /// </summary>
+    public async Task<List<ExternalDownloadInfo>> GetAllDownloadsByCategoryAsync(DownloadClient config, string category)
+    {
+        var results = new List<ExternalDownloadInfo>();
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Active queue (downloading, paused, post-processing)
+        var queue = await GetListAsync(config);
+        if (queue != null)
+        {
+            foreach (var item in queue.Where(q =>
+                q.Category.Equals(category, StringComparison.OrdinalIgnoreCase)))
+            {
+                var id = item.NZBID.ToString();
+                if (!seenIds.Add(id)) continue;
+
+                var totalSize = ((long)item.FileSizeHi << 32) | (uint)item.FileSizeLo;
+                results.Add(new ExternalDownloadInfo
+                {
+                    DownloadId = id,
+                    Title = item.NZBName,
+                    Category = item.Category,
+                    FilePath = string.Empty, // Queue items don't have a final storage path yet
+                    Size = totalSize,
+                    IsCompleted = false,
+                    Protocol = "Usenet",
+                    TorrentInfoHash = null,
+                    CompletedDate = null
+                });
+            }
+        }
+
+        // History (completed/failed downloads)
+        var history = await GetHistoryAsync(config);
+        if (history != null)
+        {
+            foreach (var item in history.Where(h =>
+                h.Category.Equals(category, StringComparison.OrdinalIgnoreCase) &&
+                h.Status.Equals("SUCCESS/ALL", StringComparison.OrdinalIgnoreCase)))
+            {
+                var id = item.NZBID.ToString();
+                if (!seenIds.Add(id)) continue;
+
+                var totalSize = ((long)item.FileSizeHi << 32) | (uint)item.FileSizeLo;
+                results.Add(new ExternalDownloadInfo
+                {
+                    DownloadId = id,
+                    Title = item.Name,
+                    Category = item.Category,
+                    FilePath = item.DestDir,
+                    Size = totalSize,
+                    IsCompleted = true,
+                    Protocol = "Usenet",
+                    TorrentInfoHash = null,
+                    CompletedDate = item.HistoryTime > 0
+                        ? DateTimeOffset.FromUnixTimeSeconds(item.HistoryTime).UtcDateTime
+                        : (DateTime?)null
+                });
+            }
+        }
+
+        _logger.LogDebug("[NZBGet] Found {Count} downloads in category '{Category}'", results.Count, category);
+        return results;
+    }
+
+    /// <summary>
     /// Get history
     /// </summary>
     public async Task<List<NzbGetHistoryItem>?> GetHistoryAsync(DownloadClient config)
@@ -579,7 +653,7 @@ public class NzbGetClient
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
             }
 
-            var response = await client.SendAsync(request);
+            using var response = await client.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)

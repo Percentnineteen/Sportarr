@@ -2,14 +2,14 @@ namespace Sportarr.Api.Models;
 
 /// <summary>
 /// Represents a league excluded from import lists.
-/// Maps to Sonarr's ImportListExclusionResource for Maintainerr compatibility.
+/// Maps to ImportListExclusionResource for Maintainerr compatibility.
 /// </summary>
 public class ImportListExclusion
 {
     public int Id { get; set; }
 
     /// <summary>
-    /// Sportarr API ID (maps to Sonarr's tvdbId for Maintainerr compatibility)
+    /// Sportarr API ID (exposed as tvdbId for Maintainerr compatibility).
     /// </summary>
     public int TvdbId { get; set; }
 

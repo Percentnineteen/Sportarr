@@ -116,7 +116,7 @@ public class QualityItem
     public List<QualityItem>? Items { get; set; }
 
     /// <summary>
-    /// Unique identifier for this quality item (used by Sonarr API)
+    /// Unique identifier for this quality item.
     /// </summary>
     public int? Id { get; set; }
 

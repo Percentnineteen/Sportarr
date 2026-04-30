@@ -34,9 +34,14 @@ public class DelugeClient
         {
             if (_customHttpClient == null)
             {
-                var handler = new HttpClientHandler
+                var handler = new SocketsHttpHandler
                 {
-                    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                    SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
+                    }
                 };
                 _customHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(100) };
             }
@@ -107,9 +112,8 @@ public class DelugeClient
     }
 
     /// <summary>
-    /// Add torrent from URL
-    /// NOTE: Does NOT specify download_location - Deluge uses its own configured directory
-    /// This matches Sonarr/Radarr behavior
+    /// Add torrent from URL.
+    /// NOTE: Does NOT specify download_location - Deluge uses its own configured directory.
     ///
     /// Uses core.add_torrent_file instead of core.add_torrent_url to avoid SSL/HTTPS issues
     /// with Prowlarr proxy URLs. Downloads the torrent file first, then sends as base64.
@@ -205,7 +209,7 @@ public class DelugeClient
                     _logger.LogInformation("[Deluge] Applied label '{Category}' to torrent {Hash}", category, hash);
                 }
 
-                // Apply per-torrent seed limits from indexer settings (matches Sonarr behavior)
+                // Apply per-torrent seed limits from indexer settings.
                 if (hash != null && seedRatioLimit.HasValue && seedRatioLimit.Value > 0)
                 {
                     await SetTorrentSeedingConfigurationAsync(config, hash, seedRatioLimit.Value);
@@ -254,7 +258,7 @@ public class DelugeClient
     }
 
     /// <summary>
-    /// Set per-torrent seeding configuration (matches Sonarr's DelugeProxy.SetTorrentSeedingConfiguration)
+    /// Set per-torrent seeding configuration via Deluge's set_torrent_options RPC.
     /// </summary>
     public async Task SetTorrentSeedingConfigurationAsync(DownloadClient config, string hash, double seedRatioLimit)
     {
@@ -293,7 +297,7 @@ public class DelugeClient
 
             // Request both save_path (Deluge 1.x) and download_location (Deluge 2.x canonical)
             // so we can tolerate either version. See DelugeTorrent.EffectiveSavePath below for
-            // the selection logic — matches Radarr/Sonarr's DelugeProxy behavior.
+            // the selection logic.
             var fields = new[] { "hash", "name", "total_size", "progress", "total_done",
                                 "total_uploaded", "state", "eta", "download_payload_rate",
                                 "upload_payload_rate", "save_path", "download_location",
@@ -911,7 +915,7 @@ public class DelugeClient
                 requestMessage.Headers.Add("Cookie", _cookie);
             }
 
-            var response = await client.SendAsync(requestMessage);
+            using var response = await client.SendAsync(requestMessage);
             var responseBody = await response.Content.ReadAsStringAsync();
 
             _logger.LogDebug("[Deluge] RPC Response: Status={StatusCode}, Method={Method}", response.StatusCode, method);

@@ -1,8 +1,7 @@
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Release Profile for filtering and scoring releases based on keywords
-/// Similar to Sonarr's Release Profiles feature
+/// Release Profile for filtering and scoring releases based on keywords.
 /// </summary>
 public class ReleaseProfile
 {

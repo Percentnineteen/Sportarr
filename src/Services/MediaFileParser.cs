@@ -5,7 +5,6 @@ namespace Sportarr.Api.Services;
 
 /// <summary>
 /// Parses media file names to extract quality, resolution, codecs, etc.
-/// Based on Sonarr/Radarr parsing logic
 /// </summary>
 public class MediaFileParser
 {

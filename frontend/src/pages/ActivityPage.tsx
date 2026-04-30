@@ -12,6 +12,8 @@ import {
   NoSymbolIcon,
   Cog6ToothIcon,
   ChevronUpDownIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
   ExclamationCircleIcon,
   EyeIcon
 } from '@heroicons/react/24/outline';
@@ -56,7 +58,7 @@ interface QueueItem {
   progress: number;
   timeRemaining?: string;
   errorMessage?: string;
-  statusMessages?: string[]; // Sonarr-style status messages (warnings, errors)
+  statusMessages?: string[]; // Status messages (warnings, errors)
   added: string;
   completedAt?: string;
   importedAt?: string;
@@ -244,6 +246,34 @@ export default function ActivityPage() {
     const saved = localStorage.getItem('queueShowUnknownEvents');
     return saved ? JSON.parse(saved) : true;
   });
+
+  // Queue sort. The column-header click in compact mode and the spacious-mode
+  // sort toolbar both write here. Persisted to localStorage so the user's
+  // choice survives reloads. Default is Added DESC (newest first), matching
+  // the API's default ORDER BY.
+  type QueueSortField = 'event' | 'title' | 'quality' | 'status' | 'progress' | 'size' | 'client' | 'added';
+  const [queueSortField, setQueueSortField] = useState<QueueSortField>(() => {
+    const saved = localStorage.getItem('queueSortField');
+    return (saved as QueueSortField) || 'added';
+  });
+  const [queueSortDirection, setQueueSortDirection] = useState<'asc' | 'desc'>(() => {
+    const saved = localStorage.getItem('queueSortDirection');
+    return saved === 'asc' ? 'asc' : 'desc';
+  });
+  useEffect(() => { localStorage.setItem('queueSortField', queueSortField); }, [queueSortField]);
+  useEffect(() => { localStorage.setItem('queueSortDirection', queueSortDirection); }, [queueSortDirection]);
+
+  // Click handler shared by compact column headers and the spacious sort
+  // toolbar buttons. Clicking the active field flips direction; clicking a
+  // new field resets to ascending.
+  const handleSortFieldChange = (field: QueueSortField) => {
+    if (field === queueSortField) {
+      setQueueSortDirection(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setQueueSortField(field);
+      setQueueSortDirection('asc');
+    }
+  };
 
   // Column order - load from localStorage or use default order
   const [columnOrder, setColumnOrder] = useState<(keyof ColumnVisibility)[]>(() => {
@@ -467,8 +497,27 @@ export default function ActivityPage() {
     }
   };
 
-  const handleRefresh = () => {
-    loadData();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const handleRefresh = async () => {
+    // Without this state the click is silent: loadData() defaults to
+    // showLoading=false, so no spinner toggles and the button click looks
+    // dead even though the data is being refetched. Hold a button-local
+    // "refreshing" state so the icon spins and the label flips for the
+    // duration of the request, giving the click visible feedback.
+    setIsRefreshing(true);
+    try {
+      if (activeTab === 'queue') {
+        await loadQueue(true);
+      } else if (activeTab === 'history') {
+        await loadHistory(true);
+      } else if (activeTab === 'grabHistory') {
+        await loadGrabHistory(true);
+      } else {
+        await loadBlocklist(true);
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // Pack import handlers
@@ -652,6 +701,21 @@ export default function ActivityPage() {
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
   };
 
+  // SABnzbd / qBittorrent both report "0:00:00" / "00:00:00" when an item
+  // isn't actually transferring right now (queued behind another download,
+  // throttled, paused, no slot available). Showing "00:00:00 left" looks
+  // like a buggy zero-ETA, so treat any all-zeros TimeSpan as "no value" and
+  // let the UI fall back to a dash / hide the "left" suffix.
+  //
+  // .NET TimeSpan serializes as "[d.]hh:mm:ss[.fffffff]" — split on : or .
+  // and check whether every numeric chunk is zero.
+  const isMeaningfulTimeRemaining = (timeRemaining: string | null | undefined) => {
+    if (!timeRemaining) return false;
+    const trimmed = timeRemaining.trim();
+    if (!trimmed) return false;
+    return trimmed.split(/[:.]/).some(chunk => /\d/.test(chunk) && parseInt(chunk, 10) > 0);
+  };
+
   // Use shared formatRelativeDate from timezone.ts which correctly parses UTC dates
   // (prevents phantom timezone offset in "Added" column)
   const formatDate = formatRelativeDate;
@@ -704,11 +768,34 @@ export default function ActivityPage() {
     setDraggedColumn(null);
   };
 
-  // Filter by showUnknownEvents setting, then sort newest-first
+  // Filter by showUnknownEvents setting, then sort by the user's chosen field.
+  // The Added DESC default matches what the API returns, so users who never
+  // touch the sort controls see the same ordering as before.
   const queueRows = (showUnknownEvents
     ? queueItems
     : queueItems.filter(item => item.event && item.event.id)
-  ).slice().sort((a, b) => new Date(b.added).getTime() - new Date(a.added).getTime());
+  ).slice().sort((a, b) => {
+    const dir = queueSortDirection === 'asc' ? 1 : -1;
+    const cmpStr = (x: string | undefined, y: string | undefined) =>
+      ((x ?? '').toLowerCase()).localeCompare((y ?? '').toLowerCase());
+    const cmpNum = (x: number | undefined, y: number | undefined) =>
+      (x ?? 0) - (y ?? 0);
+
+    switch (queueSortField) {
+      case 'event':    return dir * cmpStr(a.event?.title, b.event?.title);
+      case 'title':    return dir * cmpStr(a.title, b.title);
+      case 'quality':  return dir * cmpStr(a.quality, b.quality);
+      // Status is a numeric enum but the user thinks of it as a category;
+      // sort by enum value (which roughly orders Queued < Downloading <
+      // Importing < Imported < Failed) so similar states cluster together.
+      case 'status':   return dir * cmpNum(a.status, b.status);
+      case 'progress': return dir * cmpNum(a.progress, b.progress);
+      case 'size':     return dir * cmpNum(a.size, b.size);
+      case 'client':   return dir * cmpStr(a.downloadClient?.name, b.downloadClient?.name);
+      case 'added':    return dir * (new Date(a.added).getTime() - new Date(b.added).getTime());
+      default:         return 0;
+    }
+  });
 
   // Selection helpers for multi-select
   const toggleSelectQueueItem = (id: number) => {
@@ -834,7 +921,7 @@ export default function ActivityPage() {
       case 'timeLeft':
         return (
           <td key="timeLeft" className="px-2 py-1.5 text-center">
-            <span className="text-gray-400 text-xs">{item.timeRemaining || '-'}</span>
+            <span className="text-gray-400 text-xs">{isMeaningfulTimeRemaining(item.timeRemaining) ? item.timeRemaining : '—'}</span>
           </td>
         );
       case 'client':
@@ -943,21 +1030,22 @@ export default function ActivityPage() {
           subtitle="Monitor downloads and import history"
           actions={
             <>
-              {activeTab === 'queue' && compactView && (
+              {activeTab === 'queue' && (
                 <button
                   onClick={() => setShowTableOptions(true)}
                   className="flex items-center rounded-lg bg-gray-700 px-3 py-2 text-white transition-colors hover:bg-gray-600 md:px-4"
-                  title="Table Options"
+                  title="View Options"
                 >
                   <Cog6ToothIcon className="w-5 h-5" />
                 </button>
               )}
               <button
                 onClick={handleRefresh}
-                className="flex items-center rounded-lg bg-red-600 px-3 py-2 text-white transition-colors hover:bg-red-700 md:px-4"
+                disabled={isRefreshing}
+                className="flex items-center rounded-lg bg-red-600 px-3 py-2 text-white transition-colors hover:bg-red-700 md:px-4 disabled:opacity-70 disabled:cursor-wait"
               >
-                <ArrowPathIcon className="w-5 h-5 md:mr-2" />
-                <span className="hidden md:inline">Refresh</span>
+                <ArrowPathIcon className={`w-5 h-5 md:mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span className="hidden md:inline">{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
               </button>
             </>
           }
@@ -1038,9 +1126,36 @@ export default function ActivityPage() {
                         {columnOrder.map(column => {
                           if (!columnVisibility[column]) return null;
                           const align = column === 'event' || column === 'title' ? 'text-left' : column === 'actions' ? 'text-right' : 'text-center';
+                          // Map column key → sort field. Not every column is
+                          // sortable: protocol/indexer/timeLeft/actions don't
+                          // have a meaningful sort, so they render as plain
+                          // labels.
+                          const sortFieldForColumn: Partial<Record<keyof ColumnVisibility, QueueSortField>> = {
+                            event: 'event', title: 'title', quality: 'quality',
+                            status: 'status', progress: 'progress', size: 'size',
+                            client: 'client', added: 'added',
+                          };
+                          const sortField = sortFieldForColumn[column];
+                          const isSorted = sortField && sortField === queueSortField;
+                          const SortIcon = !sortField
+                            ? null
+                            : isSorted
+                              ? (queueSortDirection === 'asc' ? ChevronUpIcon : ChevronDownIcon)
+                              : ChevronUpDownIcon;
+                          const justify = align === 'text-left' ? 'justify-start' : align === 'text-right' ? 'justify-end' : 'justify-center';
                           return (
-                            <th key={column} className={`${align === 'text-left' ? 'px-3' : 'px-2'} py-1.5 ${align} font-medium`}>
-                              {getColumnLabel(column)}
+                            <th
+                              key={column}
+                              className={`${align === 'text-left' ? 'px-3' : 'px-2'} py-1.5 ${align} font-medium ${sortField ? 'cursor-pointer hover:text-white select-none' : ''}`}
+                              onClick={sortField ? () => handleSortFieldChange(sortField) : undefined}
+                              title={sortField ? `Sort by ${getColumnLabel(column)}` : undefined}
+                            >
+                              <span className={`inline-flex items-center gap-1 ${justify}`}>
+                                {getColumnLabel(column)}
+                                {SortIcon && (
+                                  <SortIcon className={`w-3 h-3 ${isSorted ? 'text-white' : 'text-gray-500'}`} />
+                                )}
+                              </span>
                             </th>
                           );
                         })}
@@ -1233,6 +1348,44 @@ export default function ActivityPage() {
               ) : (
                 /* Spacious: card grid */
                 <div className="space-y-3">
+                  {/* Sort header row — spacious mode has no table, but we
+                     still expose the same clickable column sort the compact
+                     table does so the user can sort regardless of layout.
+                     Filtered by columnVisibility so the View Options modal's
+                     Columns section affects both layouts: hiding a column in
+                     the modal also hides its sort button here. */}
+                  <div className="flex items-center gap-1 text-xs text-gray-400 px-2 py-2 bg-gray-800/40 border border-gray-700/50 rounded-lg">
+                    <span className="font-medium mr-1">Sort:</span>
+                    {columnOrder.map(column => {
+                      if (!columnVisibility[column]) return null;
+                      const sortFieldForColumn: Partial<Record<keyof ColumnVisibility, QueueSortField>> = {
+                        event: 'event', title: 'title', quality: 'quality',
+                        status: 'status', progress: 'progress', size: 'size',
+                        client: 'client', added: 'added',
+                      };
+                      const sortField = sortFieldForColumn[column];
+                      if (!sortField) return null;
+                      const isSorted = sortField === queueSortField;
+                      const SortIcon = isSorted
+                        ? (queueSortDirection === 'asc' ? ChevronUpIcon : ChevronDownIcon)
+                        : ChevronUpDownIcon;
+                      return (
+                        <button
+                          key={column}
+                          onClick={() => handleSortFieldChange(sortField)}
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded transition-colors ${
+                            isSorted
+                              ? 'bg-red-900/40 text-white'
+                              : 'hover:bg-gray-700/60 text-gray-300'
+                          }`}
+                          title={`Sort by ${getColumnLabel(column)}`}
+                        >
+                          {getColumnLabel(column)}
+                          <SortIcon className={`w-3 h-3 ${isSorted ? 'text-white' : 'text-gray-500'}`} />
+                        </button>
+                      );
+                    })}
+                  </div>
                   {/* Pending Import Cards */}
                   {pendingImports.map((pendingImport) => (
                     <div
@@ -1366,7 +1519,7 @@ export default function ActivityPage() {
                               )}
                               <div className="flex items-center gap-4 text-sm text-gray-500 flex-wrap">
                                 <span>{formatBytes(item.downloaded)} / {formatBytes(item.size)}</span>
-                                {item.timeRemaining && <><span className="text-gray-600">•</span><span>{item.timeRemaining} left</span></>}
+                                {isMeaningfulTimeRemaining(item.timeRemaining) && <><span className="text-gray-600">•</span><span>{item.timeRemaining} left</span></>}
                                 {item.indexer && <><span className="text-gray-600">•</span><span>{item.indexer}</span></>}
                                 <span className="text-gray-600">•</span>
                                 <span>{formatDate(item.added)}</span>
@@ -2075,12 +2228,12 @@ export default function ActivityPage() {
           </div>
         )}
 
-        {/* Table Options Modal - Sonarr Style */}
+        {/* View Options Modal */}
         {showTableOptions && (
           <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
             <div className="bg-gradient-to-br from-gray-900 to-black border border-red-700 rounded-lg max-w-lg w-full max-h-[90vh] overflow-y-auto">
               <div className="sticky top-0 bg-gradient-to-br from-gray-900 to-black border-b border-gray-700 px-6 py-4 flex items-center justify-between">
-                <h3 className="text-xl font-bold text-white">Table Options</h3>
+                <h3 className="text-xl font-bold text-white">View Options</h3>
                 <button
                   onClick={() => setShowTableOptions(false)}
                   className="text-gray-400 hover:text-white transition-colors"

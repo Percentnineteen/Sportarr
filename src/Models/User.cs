@@ -3,7 +3,7 @@ using System.ComponentModel.DataAnnotations;
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// User model for authentication (matches Sonarr/Radarr implementation)
+/// User model for authentication.
 /// </summary>
 public class User
 {

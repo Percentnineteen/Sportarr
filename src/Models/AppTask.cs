@@ -1,11 +1,11 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Represents a task in the Sportarr task queue system
-/// Tracks background operations, scheduled jobs, and manual operations
-/// Similar to Sonarr/Radarr command queue implementation
+/// Represents a task in the Sportarr task queue system.
+/// Tracks background operations, scheduled jobs, and manual operations.
 /// </summary>
 public class AppTask
 {
@@ -91,8 +91,12 @@ public class AppTask
 }
 
 /// <summary>
-/// Task execution status
+/// Task execution status. Serialized as a string so the frontend's
+/// `status === 'Queued'` filters match — without this attribute System.Text.Json
+/// emits the underlying integer and every Tasks-page filter silently drops
+/// every row.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum TaskStatus
 {
     /// <summary>

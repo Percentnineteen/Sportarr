@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Caching.Memory;
 using Sportarr.Api.Models;
 
 namespace Sportarr.Api.Services;
@@ -15,6 +16,7 @@ public class SportarrApiClient
     private readonly HttpClient _httpClient;
     private readonly ILogger<SportarrApiClient> _logger;
     private readonly ConfigService _configService;
+    private readonly IMemoryCache _cache;
     private readonly string _defaultApiBaseUrl;
 
     // JSON deserialization options for Sportarr API responses (case-insensitive)
@@ -23,11 +25,12 @@ public class SportarrApiClient
         PropertyNameCaseInsensitive = true
     };
 
-    public SportarrApiClient(HttpClient httpClient, ILogger<SportarrApiClient> logger, IConfiguration configuration, ConfigService configService)
+    public SportarrApiClient(HttpClient httpClient, ILogger<SportarrApiClient> logger, IConfiguration configuration, ConfigService configService, IMemoryCache cache)
     {
         _httpClient = httpClient;
         _logger = logger;
         _configService = configService;
+        _cache = cache;
         _defaultApiBaseUrl = configuration["SportarrApi:BaseUrl"] ?? "https://sportarr.net/api/v2/json";
     }
 
@@ -59,7 +62,7 @@ public class SportarrApiClient
             var url = $"{_apiBaseUrl}/search/league/{Uri.EscapeDataString(query)}";
             _logger.LogInformation("[SportarrAPI] Calling URL: {Url}", url);
 
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -87,7 +90,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/search/team/{Uri.EscapeDataString(query)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -109,7 +112,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/search/player/{Uri.EscapeDataString(query)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -131,7 +134,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/search/event/{Uri.EscapeDataString(query)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -157,7 +160,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/lookup/league/{Uri.EscapeDataString(id)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -179,7 +182,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/lookup/team/{Uri.EscapeDataString(id)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -201,7 +204,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/lookup/player/{Uri.EscapeDataString(id)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -223,7 +226,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/lookup/event/{Uri.EscapeDataString(id)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -249,7 +252,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/schedule/team/next10/{Uri.EscapeDataString(teamId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -271,7 +274,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/schedule/team/prev10/{Uri.EscapeDataString(teamId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -294,7 +297,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/list/leagues/team/{Uri.EscapeDataString(teamId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -317,7 +320,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/list/seasons/{Uri.EscapeDataString(leagueId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -341,7 +344,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/list/teams/{Uri.EscapeDataString(leagueId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -376,7 +379,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/schedule/league/{Uri.EscapeDataString(leagueId)}/{Uri.EscapeDataString(season)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -403,6 +406,16 @@ public class SportarrApiClient
                         evt.EventDate = evt.DateEventFallback;
                         _logger.LogDebug("[SportarrAPI] Used dateEvent fallback for event: {EventTitle} ({Date})",
                             evt.Title, evt.EventDate);
+                    }
+
+                    // Always preserve the broadcast-local date from dateEvent.
+                    // Indexer releases name shows by their broadcast-local date,
+                    // not by UTC, so we need this for accurate query building.
+                    // Example: AEW Dec 31 2025 8pm Eastern -> EventDate=2026-01-01T01:00Z
+                    // but BroadcastDate=2025-12-31, matching "AEW.2025.12.31.*" releases.
+                    if (evt.DateEventFallback != DateTime.MinValue)
+                    {
+                        evt.BroadcastDate = evt.DateEventFallback.Date;
                     }
                 }
             }
@@ -431,7 +444,7 @@ public class SportarrApiClient
         {
             // Use Sportarr API's actual endpoint
             var url = $"{_apiBaseUrl}/tv/event/{Uri.EscapeDataString(eventId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
 
             // Re-throw 429 errors so calling code can handle rate limiting
             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
@@ -466,7 +479,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/filter/tv/day/{Uri.EscapeDataString(date)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
 
             // Re-throw 429 errors so calling code can handle rate limiting
             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
@@ -504,7 +517,7 @@ public class SportarrApiClient
         {
             // Use Sportarr API's actual endpoint - fetch all events for date
             var url = $"{_apiBaseUrl}/filter/tv/day/{Uri.EscapeDataString(date)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -537,7 +550,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/livescore/sport/{Uri.EscapeDataString(sport)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -559,7 +572,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/livescore/league/{Uri.EscapeDataString(leagueId)}";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -591,7 +604,7 @@ public class SportarrApiClient
 
             _logger.LogInformation("[SportarrAPI] Fetching all leagues from: {Url}", url);
 
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -634,7 +647,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/all/sports";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -656,7 +669,7 @@ public class SportarrApiClient
         try
         {
             var url = $"{_apiBaseUrl}/all/countries";
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -677,9 +690,17 @@ public class SportarrApiClient
     /// </summary>
     /// <param name="sports">Optional list of sports to filter. If null, uses default supported sports.</param>
     /// <returns>List of unique teams across all leagues in the specified sports</returns>
-    public async Task<List<Team>?> GetAllTeamsForSportsAsync(IEnumerable<string>? sports = null)
+    public async Task<List<Team>?> GetAllTeamsForSportsAsync(IEnumerable<string>? sports = null, bool forceRefresh = false)
     {
-        var supportedSports = sports?.ToList() ?? new List<string> { "Soccer", "Basketball", "Ice Hockey" };
+        var supportedSports = sports?.OrderBy(s => s).ToList() ?? new List<string> { "Basketball", "Ice Hockey", "Soccer" };
+        var cacheKey = $"all-teams:{string.Join(",", supportedSports)}";
+
+        // Return cached result if available and not forcing refresh
+        if (!forceRefresh && _cache.TryGetValue(cacheKey, out List<Team>? cached) && cached != null)
+        {
+            _logger.LogInformation("[SportarrAPI] Returning {Count} cached teams for {Sports}", cached.Count, string.Join(", ", supportedSports));
+            return cached;
+        }
 
         try
         {
@@ -752,6 +773,13 @@ public class SportarrApiClient
             _logger.LogInformation("[SportarrAPI] Aggregated {Total} total teams, {Unique} unique teams for {Sports}",
                 allTeams.Count, uniqueTeams.Count, string.Join(", ", supportedSports));
 
+            // Cache the result - teams rarely change, so cache aggressively
+            _cache.Set(cacheKey, uniqueTeams, new MemoryCacheEntryOptions
+            {
+                SlidingExpiration = TimeSpan.FromHours(6),
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24)
+            });
+
             return uniqueTeams;
         }
         catch (Exception ex)
@@ -784,7 +812,7 @@ public class SportarrApiClient
 
             _logger.LogDebug("[SportarrAPI] Fetching episode numbers from: {Url}", url);
 
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -984,8 +1012,8 @@ public class ScheduleData
 }
 
 /// <summary>
-/// TV Schedule information for an event
-/// Critical for timing automatic searches (like Sonarr's air time monitoring)
+/// TV Schedule information for an event.
+/// Critical for timing automatic searches around broadcast time.
 /// </summary>
 public class TVSchedule
 {

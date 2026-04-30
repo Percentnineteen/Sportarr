@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Authentication service using proper password hashing (Sonarr/Radarr pattern)
+/// Authentication service using proper password hashing.
 /// </summary>
 public class AuthenticationService
 {

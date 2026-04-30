@@ -1,8 +1,8 @@
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Represents a fighting organization (e.g., UFC, Bellator, ONE Championship)
-/// Similar to Sonarr's Series concept - a container for events
+/// Represents a fighting organization (e.g., UFC, Bellator, ONE Championship).
+/// A container for events.
 /// </summary>
 public class Organization
 {

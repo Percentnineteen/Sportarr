@@ -31,7 +31,7 @@ public class NewznabClient
         {
             // Test with caps endpoint
             var url = BuildUrl(config, "caps");
-            var response = await _httpClient.GetAsync(url);
+            using var response = await _httpClient.GetAsync(url);
 
             if (response.IsSuccessStatusCode)
             {
@@ -92,7 +92,7 @@ public class NewznabClient
             request.Headers.Add("X-Rate-Limit-Ms", config.RequestDelayMs.ToString());
         }
 
-        var response = await _httpClient.SendAsync(request);
+        using var response = await _httpClient.SendAsync(request);
 
         // Handle HTTP 429 Too Many Requests
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
@@ -128,9 +128,9 @@ public class NewznabClient
     }
 
     /// <summary>
-    /// Fetch RSS feed (recent releases without query) - Sonarr-style RSS sync
-    /// This returns the most recent releases from the indexer without any search query
-    /// Used for passive discovery of new content
+    /// Fetch RSS feed — recent releases without a search query.
+    /// Returns the most recent releases from the indexer for passive discovery
+    /// of new content.
     /// </summary>
     public async Task<List<ReleaseSearchResult>> FetchRssFeedAsync(Indexer config, int maxResults = 500)
     {
@@ -165,7 +165,7 @@ public class NewznabClient
             request.Headers.Add("X-Rate-Limit-Ms", config.RequestDelayMs.ToString());
         }
 
-        var response = await _httpClient.SendAsync(request);
+        using var response = await _httpClient.SendAsync(request);
 
         // Handle HTTP 429 Too Many Requests
         if (response.StatusCode == HttpStatusCode.TooManyRequests)

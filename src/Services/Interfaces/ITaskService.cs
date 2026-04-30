@@ -4,7 +4,6 @@ namespace Sportarr.Api.Services.Interfaces;
 
 /// <summary>
 /// Interface for task queue management.
-/// Similar to Sonarr/Radarr command queue system.
 /// </summary>
 public interface ITaskService
 {
@@ -38,4 +37,11 @@ public interface ITaskService
     /// </summary>
     /// <param name="keepCount">Number of recent tasks to keep</param>
     Task CleanupOldTasksAsync(int keepCount = 100);
+
+    /// <summary>
+    /// Reset any tasks left in Running state (process crashed mid-task) and
+    /// kick the queue. Intended to be called once at application startup so
+    /// the queue resumes draining and orphan Running rows don't block it.
+    /// </summary>
+    Task RecoverAndResumeAsync();
 }

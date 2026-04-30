@@ -4,8 +4,9 @@ namespace Sportarr.Api.Services;
 
 /// <summary>
 /// Service for getting disk space information.
-/// Handles Docker volumes correctly by reading /proc/mounts on Linux.
-/// This matches Sonarr's approach for accurate disk space reporting.
+/// Handles Docker volumes correctly by reading /proc/mounts on Linux so the
+/// reported free/total numbers reflect the actual underlying filesystem
+/// rather than the container overlay.
 /// </summary>
 public class DiskSpaceService
 {

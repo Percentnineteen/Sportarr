@@ -261,7 +261,7 @@ public class FileImportService : IFileImportService
 
             if (upgradedFile != null)
             {
-                // Compare quality scores - reject if not an upgrade (Sonarr UpgradeSpecification)
+                // Compare quality scores - reject if not an upgrade.
                 var existingTotalScore = ReleaseEvaluator.CalculateQualityScoreFromName(upgradedFile.Quality) + upgradedFile.CustomFormatScore;
                 var newTotalScore = ReleaseEvaluator.CalculateQualityScoreFromName(download.Quality) + download.CustomFormatScore;
 
@@ -414,13 +414,13 @@ public class FileImportService : IFileImportService
             _logger.LogInformation("Successfully imported: {Title} -> {Path}",
                 download.Title, destinationPath);
 
-            // SONARR-STYLE POST-IMPORT CATEGORY: Change torrent category after successful import
+            // POST-IMPORT CATEGORY: Change torrent category after successful import.
             // This allows users to move imported torrents to a different category for automated management
-            // (e.g., move to "imported" category which uses different storage tier or seeding rules)
+            // (e.g., move to "imported" category which uses different storage tier or seeding rules).
             await ApplyPostImportCategoryAsync(download);
 
-            // SONARR-STYLE NOTIFICATIONS: Send notifications (Discord, Telegram, Plex, Jellyfin, Emby, etc.) for the import
-            // Media server refresh (Plex/Jellyfin/Emby) is handled through the notification system, just like Sonarr/Radarr
+            // NOTIFICATIONS: Send notifications (Discord, Telegram, Plex, Jellyfin, Emby, etc.) for the import.
+            // Media server refresh (Plex/Jellyfin/Emby) is handled through the notification system.
             try
             {
                 await _notificationService.SendNotificationAsync(
@@ -497,7 +497,7 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
-    /// Apply post-import category to download in download client (Sonarr-style feature)
+    /// Apply post-import category to download in download client.
     /// This moves the torrent to a different category after successful import, allowing
     /// users to implement automated management (e.g., move to different storage tier, apply different seeding rules)
     /// </summary>
@@ -682,8 +682,8 @@ public class FileImportService : IFileImportService
         }
         else
         {
-            // RenameEvents=false: preserve the original downloaded filename exactly as-is
-            // This matches Sonarr/Radarr behavior - "don't rename" means keep the torrent's filename
+            // RenameEvents=false: preserve the original downloaded filename exactly as-is.
+            // "Don't rename" means keep the torrent's filename.
             var originalFilename = !string.IsNullOrEmpty(sourceFile) ? Path.GetFileName(sourceFile) : null;
             filename = !string.IsNullOrEmpty(originalFilename) ? originalFilename : (eventInfo.Title ?? parsed.EventTitle) + extension;
         }
@@ -694,8 +694,8 @@ public class FileImportService : IFileImportService
         // imports from download client folders, not from the library itself.
         // The same-path check is only needed in LibraryImportService for manual re-imports.
 
-        // If destination file already exists, delete it (Sonarr behavior)
-        // Never create numbered duplicates like (1), (2)
+        // If destination file already exists, delete it.
+        // Never create numbered duplicates like (1), (2).
         if (File.Exists(destinationPath))
         {
             _logger.LogWarning("[Import] Destination file already exists, deleting: {Path}", destinationPath);
@@ -748,8 +748,8 @@ public class FileImportService : IFileImportService
             settings.UseHardlinks, settings.CopyFiles, RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
         _logger.LogInformation("[Transfer] Transferring: {Source} -> {Destination}", source, destination);
 
-        // Track if we should fall back to copy when hardlinks are enabled but fail
-        // This matches Sonarr behavior: UseHardlinks implies "copy mode" even if hardlink fails
+        // Track if we should fall back to copy when hardlinks are enabled but fail.
+        // UseHardlinks implies "copy mode" even if hardlink fails.
         var useHardlinksCopyFallback = false;
 
         if (settings.UseHardlinks)
@@ -773,8 +773,8 @@ public class FileImportService : IFileImportService
             }
             catch (Exception ex)
             {
-                // Hardlink failed - will fall back to COPY (not move) to preserve source file
-                // This matches Sonarr's behavior: UseHardlinks means "don't delete source"
+                // Hardlink failed - will fall back to COPY (not move) to preserve source file.
+                // UseHardlinks means "don't delete source".
                 useHardlinksCopyFallback = true;
 
                 // Check for cross-device/cross-volume errors
@@ -820,8 +820,7 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
-    /// Check if a file is a symbolic link (cross-platform)
-    /// Follows Radarr/Sonarr pattern for symlink detection
+    /// Check if a file is a symbolic link (cross-platform).
     /// </summary>
     private bool IsSymbolicLink(string path)
     {
@@ -941,8 +940,7 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
-    /// Copy a symbolic link to a new location, preserving the symlink target
-    /// Follows Radarr/Sonarr pattern for symlink handling
+    /// Copy a symbolic link to a new location, preserving the symlink target.
     /// </summary>
     private async Task CopySymbolicLinkAsync(string source, string destination)
     {
@@ -977,8 +975,8 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
-    /// Move a symbolic link to a new location (delete original, create new)
-    /// Follows Radarr/Sonarr pattern - recreates symlink at new location with same target
+    /// Move a symbolic link to a new location (delete original, create new).
+    /// Recreates the symlink at the new location with the same target.
     /// </summary>
     private async Task MoveSymbolicLinkAsync(string source, string destination)
     {
@@ -1283,9 +1281,9 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
-    /// Translate remote path to local path using Remote Path Mappings (Sonarr/Radarr behavior)
-    /// Required when download client uses different path structure than Sportarr
-    /// Example: Download client reports "/data/usenet/sports/" but Sportarr sees it as "/downloads/sports/"
+    /// Translate remote path to local path using Remote Path Mappings.
+    /// Required when download client uses different path structure than Sportarr.
+    /// Example: Download client reports "/data/usenet/sports/" but Sportarr sees it as "/downloads/sports/".
     /// </summary>
     private async Task<string> TranslatePathAsync(string remotePath, string host)
     {
@@ -1370,9 +1368,8 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
-    /// Clean up download folder after successful import.
-    /// Matches Sonarr behavior: delete the source file and its containing folder
-    /// (the release-specific subfolder inside the category folder).
+    /// Clean up download folder after successful import: delete the source file
+    /// and its containing folder (the release-specific subfolder inside the category folder).
     /// </summary>
     private Task CleanupDownloadAsync(string downloadPath, string importedFile)
     {

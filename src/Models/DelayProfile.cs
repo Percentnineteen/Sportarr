@@ -1,9 +1,8 @@
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Delay profile for controlling when downloads are grabbed
-/// Allows reducing number of downloads by waiting for better releases
-/// Matches Sonarr/Radarr delay profile functionality
+/// Delay profile for controlling when downloads are grabbed.
+/// Allows reducing number of downloads by waiting for better releases.
 /// </summary>
 public class DelayProfile
 {

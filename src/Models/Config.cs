@@ -3,7 +3,7 @@ using System.Xml.Serialization;
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Main configuration file (config.xml) - matches Sonarr/Radarr pattern
+/// Main configuration file (config.xml).
 /// </summary>
 [XmlRoot("Config")]
 public class Config
@@ -12,14 +12,14 @@ public class Config
     public string ApiKey { get; set; } = Guid.NewGuid().ToString("N");
     public string AuthenticationMethod { get; set; } = "None"; // None, Basic, Forms
     public string AuthenticationRequired { get; set; } = "DisabledForLocalAddresses";
-    public bool AuthenticationEnabled { get; set; } = false; // Sonarr compatibility
+    public bool AuthenticationEnabled { get; set; } = false;
     public string Username { get; set; } = "";
-    public string Password { get; set; } = ""; // Sonarr stores hashed, but has this field
+    public string Password { get; set; } = ""; // Stored hashed in PasswordHash; this field exists for clients that POST plaintext
     public string PasswordHash { get; set; } = "";
     public string PasswordSalt { get; set; } = "";
     public int PasswordIterations { get; set; } = 10000;
     public string CertificateValidation { get; set; } = "Enabled";
-    public string SslCertHash { get; set; } = ""; // Sonarr field for SSL cert
+    public string SslCertHash { get; set; } = "";
 
     // Host
     public string BindAddress { get; set; } = "*";
@@ -30,7 +30,7 @@ public class Config
     public int SslPort { get; set; } = 1868; // Sportarr's default SSL port
     public string SslCertPath { get; set; } = "";
     public string SslCertPassword { get; set; } = "";
-    public bool LaunchBrowser { get; set; } = false; // Sonarr opens browser on startup
+    public bool LaunchBrowser { get; set; } = false; // Open the web UI in the default browser on startup
 
     // Proxy
     public bool UseProxy { get; set; } = false;
@@ -49,7 +49,7 @@ public class Config
 
     // Analytics
     public bool SendAnonymousUsageData { get; set; } = false;
-    public bool AnalyticsEnabled { get; set; } = false; // Sonarr field name
+    public bool AnalyticsEnabled { get; set; } = false;
 
     // Backup
     public string BackupFolder { get; set; } = "";
@@ -58,9 +58,9 @@ public class Config
 
     // Update
     public string Branch { get; set; } = "main";
-    public bool UpdateAutomatically { get; set; } = false; // Sonarr field name
-    public string UpdateMechanism { get; set; } = "Docker"; // Sonarr field name (BuiltIn, Script, External, Docker, Apt)
-    public string UpdateScriptPath { get; set; } = ""; // Sonarr field name for custom update script
+    public bool UpdateAutomatically { get; set; } = false;
+    public string UpdateMechanism { get; set; } = "Docker"; // BuiltIn, Script, External, Docker, Apt
+    public string UpdateScriptPath { get; set; } = ""; // Path to custom update script
 
     // UI
     public string FirstDayOfWeek { get; set; } = "Sunday";
@@ -116,16 +116,40 @@ public class Config
     // Queue Threshold Settings (Huntarr-style)
     // Pause searching when download queue exceeds threshold to prevent overloading
     public int MaxDownloadQueueSize { get; set; } = -1; // -1 = no limit, otherwise pause when queue exceeds this
+    // OBSOLETE: never wired to a service. The "automatic search cycle" cadence is
+    // now BacklogSearchIntervalMinutes (hardcoded default 6h). Field retained so
+    // existing config.xml files don't blow up on deserialization; do not read.
+    [Obsolete("Use BacklogSearchIntervalMinutes. Field exists only for backwards compatibility.")]
     public int SearchSleepDuration { get; set; } = 900; // seconds between search cycles (default 15 minutes, Huntarr pattern)
 
-    // RSS Sync Settings (Sonarr-style)
-    // RSS Sync pulls the latest releases from indexer RSS feeds and matches against monitored events locally
+    // RSS Sync Settings.
+    // RSS Sync pulls the latest releases from indexer RSS feeds and matches against monitored events locally.
     // This is MUCH more efficient than searching per-event:
     // - Old approach: N queries per sync (one per monitored event) = thousands of queries/day
     // - New approach: M queries per sync (one per RSS-enabled indexer) = 24-100 queries/day
-    public int RssSyncInterval { get; set; } = 15; // minutes between RSS sync cycles (Sonarr default: 15, min: 10, max: 120)
+    public int RssSyncInterval { get; set; } = 15; // minutes between RSS sync cycles (default 15, min 10, max 120)
     public int MaxRssReleasesPerIndexer { get; set; } = 500; // max releases to fetch per indexer RSS feed (increased from 100 to avoid missing releases)
     public int RssReleaseAgeLimit { get; set; } = 14; // days - only consider releases posted within this window (sports releases are time-sensitive)
+
+    // Backlog Search Settings — scheduled missing/cutoff-unmet search.
+    // RSS only catches recent releases. The backlog service walks past-aired monitored
+    // events that are missing (or below cutoff) and runs targeted indexer searches for
+    // them. Honors League.SearchForMissingEvents and League.SearchForCutoffUnmetEvents.
+    public int BacklogSearchIntervalMinutes { get; set; } = 360; // 6 hours between backlog passes
+    public int BacklogSearchMaxConcurrent { get; set; } = 3; // SemaphoreSlim cap so backlog doesn't hammer indexers
+    public int BacklogSearchMaxAgeDays { get; set; } = 365; // skip events older than this on backlog pass (1y by default; 0 = no cap)
+    public bool BacklogSearchEnabled { get; set; } = true;
+
+    // Indexer minimum age.
+    // Wait this many minutes after a release was posted to the indexer before
+    // grabbing it. Useful in slow Usenet groups where posts can be partial or
+    // get pulled shortly after upload, and on torrent indexers where letting
+    // a few seeders attach first improves grab reliability.
+    public int IndexerMinimumAgeMinutes { get; set; } = 0;
+
+    // Auto-search retry backoff schedule (minutes), one entry per retry attempt.
+    // Default is an exponential pattern. Comma-separated string for easy editing.
+    public string AutoSearchRetryBackoffMinutes { get; set; } = "30,60,120,240,480"; // 30m, 1h, 2h, 4h, 8h
 
     // DVR Settings
     public int DvrDefaultProfileId { get; set; } = 1; // Default quality profile ID (1 = Copy/No Transcoding) - DEPRECATED, use encoding settings below

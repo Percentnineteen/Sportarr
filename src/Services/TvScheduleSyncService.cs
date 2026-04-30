@@ -5,9 +5,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// TV Schedule Sync background service - fetches upcoming event TV schedules
-/// Updates Event.Broadcast field to enable automatic search timing
-/// Similar to Sonarr's air time monitoring for automatic downloads
+/// TV Schedule Sync background service — fetches upcoming event TV schedules
+/// and updates Event.Broadcast so automatic searches fire at the right time.
 /// </summary>
 public class TvScheduleSyncService : BackgroundService
 {

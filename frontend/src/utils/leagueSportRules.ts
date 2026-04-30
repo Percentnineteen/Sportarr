@@ -47,3 +47,73 @@ export function isFightingSport(sport: string): boolean {
   const fightingSports = ['Fighting', 'MMA', 'UFC', 'Boxing', 'Kickboxing', 'Wrestling'];
   return fightingSports.some(s => sport.toLowerCase().includes(s.toLowerCase()));
 }
+
+/**
+ * Returns true for individual-player racket/cue sports (Badminton, Table Tennis, Snooker).
+ * Tournaments feature individual players, not teams - all events should sync without team filtering.
+ */
+export function isIndividualRacketOrCueSport(sport: string): boolean {
+  const s = sport.toLowerCase();
+  return s === 'badminton' || s === 'table tennis' || s === 'snooker';
+}
+
+/**
+ * Darts matches are between individual players, not teams.
+ */
+export function isDarts(sport: string): boolean {
+  return sport.toLowerCase() === 'darts';
+}
+
+/**
+ * Climbing competitions are individual climbers, not teams.
+ */
+export function isClimbing(sport: string): boolean {
+  return sport.toLowerCase() === 'climbing';
+}
+
+/**
+ * Gambling (Poker, WSOP) events are individual players in tournaments, not teams.
+ */
+export function isGambling(sport: string): boolean {
+  return sport.toLowerCase() === 'gambling';
+}
+
+/**
+ * Returns true for sports/leagues that have no meaningful home/away team structure.
+ * These leagues should auto-monitor on add (no team selection required) and must
+ * stay in sync with the backend's sportsWithoutTeamFiltering list in
+ * LeagueEventSyncService.cs.
+ */
+export function isTeamlessSport(sport: string, leagueName: string): boolean {
+  return (
+    isMotorsport(sport) ||
+    isGolf(sport) ||
+    isDarts(sport) ||
+    isClimbing(sport) ||
+    isGambling(sport) ||
+    isIndividualRacketOrCueSport(sport) ||
+    isIndividualTennis(sport, leagueName)
+  );
+}
+
+/**
+ * Returns true for fighting leagues that monitor by event type (PPV, Fight Night,
+ * Premium Live Event, ...) instead of by team. The edit modal hides the team
+ * picker for these leagues, so they must be treated as teamless when computing
+ * `monitored` on save — otherwise an empty `monitoredTeamIds` would force the
+ * league off and override the user's event-type selection.
+ */
+export function usesFightingEventTypes(sport: string, leagueName: string): boolean {
+  if (!isFightingSport(sport)) return false;
+  const name = leagueName.toLowerCase();
+  return (
+    name.includes('ufc') ||
+    name.includes('ultimate fighting') ||
+    name.includes('wwe') ||
+    name.includes('aew') ||
+    name.includes('wrestling') ||
+    name === 'one' ||
+    name.includes('one championship') ||
+    name.includes('one fc')
+  );
+}

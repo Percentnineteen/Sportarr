@@ -292,7 +292,7 @@ public class HealthCheckService
                 });
             }
 
-            // Check if authentication is enabled but no password is set (Sonarr compatibility check)
+            // Check if authentication is enabled but no password is set.
             if (config.AuthenticationEnabled &&
                 string.IsNullOrWhiteSpace(config.PasswordHash) &&
                 string.IsNullOrWhiteSpace(config.Password))

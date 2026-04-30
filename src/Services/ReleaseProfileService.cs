@@ -11,8 +11,6 @@ namespace Sportarr.Api.Services;
 /// - Require certain keywords (release must contain at least one)
 /// - Ignore certain keywords (release will be rejected if it contains any)
 /// - Prefer certain keywords with score adjustments
-///
-/// This is similar to Sonarr's Release Profiles feature.
 /// </summary>
 public class ReleaseProfileService
 {
@@ -160,7 +158,7 @@ public class ReleaseProfileService
     {
         try
         {
-            // Treat the pattern as a regex (like Sonarr does)
+            // Treat the pattern as a regex
             var regex = new Regex(pattern, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
             return regex.IsMatch(title);
         }

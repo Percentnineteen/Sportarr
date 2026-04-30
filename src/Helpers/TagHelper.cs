@@ -1,7 +1,7 @@
 namespace Sportarr.Api.Helpers;
 
 /// <summary>
-/// Tag matching logic following Sonarr's model:
+/// Tag matching logic:
 /// - Config entity with no tags = applies globally (to all leagues)
 /// - Config entity with tags = applies only to leagues sharing at least one tag
 /// - League with no tags = only untagged (global) config entities apply

@@ -370,7 +370,7 @@ public class DownloadClientService : IDownloadClientService
     }
 
     /// <summary>
-    /// Change category of download in client (Sonarr-style post-import category)
+    /// Change category of download in client (post-import category).
     /// </summary>
     public async Task<bool> ChangeCategoryAsync(DownloadClient config, string downloadId, string category)
     {
@@ -466,7 +466,7 @@ public class DownloadClientService : IDownloadClientService
     /// <summary>
     /// Get all downloads filtered by category (downloading + completed) for external import detection.
     /// Used to find downloads added outside of Sportarr that need manual mapping.
-    /// Matches Sonarr behavior: polls ALL items in the category, not just completed ones.
+    /// Polls ALL items in the category, not just completed ones.
     /// </summary>
     public async Task<List<ExternalDownloadInfo>> GetAllDownloadsByCategoryAsync(DownloadClient config, string category)
     {
@@ -479,7 +479,10 @@ public class DownloadClientService : IDownloadClientService
             {
                 DownloadClientType.QBittorrent => await GetAllQBittorrentDownloadsAsync(config, category),
                 DownloadClientType.Deluge => await GetAllDelugeDownloadsAsync(config, category),
+                DownloadClientType.Transmission => await GetAllTransmissionDownloadsAsync(config, category),
+                DownloadClientType.RTorrent => await GetAllRTorrentDownloadsAsync(config, category),
                 DownloadClientType.Sabnzbd => await GetAllSabnzbdDownloadsAsync(config, category),
+                DownloadClientType.NzbGet => await GetAllNzbGetDownloadsAsync(config, category),
                 DownloadClientType.Decypharr => await GetAllDecypharrDownloadsAsync(config, category),
                 DownloadClientType.DecypharrUsenet => await GetAllSabnzbdDownloadsAsync(config, category),
                 DownloadClientType.NZBdav => await GetAllSabnzbdDownloadsAsync(config, category),
@@ -768,9 +771,27 @@ public class DownloadClientService : IDownloadClientService
         return await client.GetAllDownloadsByCategoryAsync(config, category);
     }
 
+    private async Task<List<ExternalDownloadInfo>> GetAllTransmissionDownloadsAsync(DownloadClient config, string category)
+    {
+        var client = GetTransmissionClient(config);
+        return await client.GetAllDownloadsByCategoryAsync(config, category);
+    }
+
+    private async Task<List<ExternalDownloadInfo>> GetAllRTorrentDownloadsAsync(DownloadClient config, string category)
+    {
+        var client = GetRTorrentClient(config);
+        return await client.GetAllDownloadsByCategoryAsync(config, category);
+    }
+
     private async Task<List<ExternalDownloadInfo>> GetAllSabnzbdDownloadsAsync(DownloadClient config, string category)
     {
         var client = GetSabnzbdClient(config);
+        return await client.GetAllDownloadsByCategoryAsync(config, category);
+    }
+
+    private async Task<List<ExternalDownloadInfo>> GetAllNzbGetDownloadsAsync(DownloadClient config, string category)
+    {
+        var client = GetNzbGetClient(config);
         return await client.GetAllDownloadsByCategoryAsync(config, category);
     }
 

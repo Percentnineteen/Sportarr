@@ -100,8 +100,8 @@ public class LibraryImportService
                     // CRITICAL: This prevents matching files to wrong events from different years
                     var parsedYear = ExtractYearFromPath(filePath, filename, sportsResult.EventYear, eventDate);
 
-                    // Check for explicit SxxxxExx episode number in filename (e.g. "Formula E - S2025E05 - Jeddah E Prix")
-                    // This is the highest-confidence signal — treated like Sonarr's S/E parsing
+                    // Check for explicit SxxxxExx episode number in filename (e.g. "Formula E - S2025E05 - Jeddah E Prix").
+                    // This is the highest-confidence signal — explicit S/E parsing wins over fuzzier matchers.
                     int? explicitEpisodeNumber = null;
                     var seMatch = System.Text.RegularExpressions.Regex.Match(filename, @"S\d{4}E(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (seMatch.Success && int.TryParse(seMatch.Groups[1].Value, out var seEp))
@@ -264,7 +264,7 @@ public class LibraryImportService
                 var sourceFileSize = sourceFileInfo.Length;
                 var parsedInfo = _fileParser.Parse(Path.GetFileNameWithoutExtension(request.FilePath));
 
-                // Parse import mode from request (Sonarr-compatible: "move" or "copy")
+                // Parse import mode from request: "move" or "copy"
                 // Default behavior based on CopyFiles setting:
                 // - CopyFiles=true: Use Copy mode (preserves source files)
                 // - CopyFiles=false: Use Move mode (removes source files)
@@ -623,7 +623,7 @@ public class LibraryImportService
             _logger.LogDebug("Created directory: {Directory}", destDir);
         }
 
-        // Transfer file based on import mode (Sonarr-compatible)
+        // Transfer file based on import mode
         await TransferFileAsync(sourcePath, destinationPath, settings, importMode);
 
         // Set permissions (Linux/macOS only)
@@ -688,12 +688,12 @@ public class LibraryImportService
     }
 
     /// <summary>
-    /// Transfer file based on import mode (Sonarr-compatible)
+    /// Transfer file based on import mode.
     /// - Move: Moves files from source to destination (regular files only)
     /// - Copy: Creates hardlinks (if UseHardlinks enabled) or copies files
     /// - Symlinks: Always use copy/hardlink to preserve debrid streaming behavior
     ///   Moving symlinks would break debrid streaming as the link target wouldn't be accessible
-    /// This matches Sonarr's manual import behavior where users choose between Move and Copy
+    /// Manual import lets the user choose between Move and Copy.
     /// </summary>
     private async Task TransferFileAsync(string source, string destination, MediaManagementSettings settings, LibraryImportMode importMode)
     {
@@ -704,9 +704,9 @@ public class LibraryImportService
         _logger.LogInformation("[Transfer] Library Import: Mode={ImportMode}, CopyFiles={CopyFiles}, UseHardlinks={UseHardlinks}, IsSymlink={IsSymlink}",
             importMode, settings.CopyFiles, settings.UseHardlinks, isSymlink);
 
-        // For symlinks (debrid services), recreate the symlink at the destination
-        // This preserves debrid streaming - we don't copy file contents, we create a new symlink
-        // pointing to the same target (following Radarr/Sonarr pattern)
+        // For symlinks (debrid services), recreate the symlink at the destination.
+        // This preserves debrid streaming — we don't copy file contents, we create
+        // a new symlink pointing to the same target.
         if (isSymlink)
         {
             _logger.LogInformation("[Transfer] Symlink detected (debrid service) - recreating symlink to preserve streaming");
@@ -722,8 +722,8 @@ public class LibraryImportService
             return;
         }
 
-        // Copy mode: Try hardlink first (if enabled), then fall back based on CopyFiles setting
-        // This matches Sonarr's "Copy" option which uses hardlinks when possible
+        // Copy mode: Try hardlink first (if enabled), then fall back based on CopyFiles setting.
+        // Hardlinks let two paths reference the same on-disk bytes without duplicating storage.
         if (settings.UseHardlinks)
         {
             try
@@ -780,8 +780,8 @@ public class LibraryImportService
     }
 
     /// <summary>
-    /// Copy a symbolic link to a new location, preserving the symlink target
-    /// Follows Radarr/Sonarr pattern for symlink handling (debrid compatibility)
+    /// Copy a symbolic link to a new location, preserving the symlink target.
+    /// Used for debrid-service compatibility so we don't materialize streamed bytes.
     /// </summary>
     private async Task CopySymbolicLinkAsync(string source, string destination)
     {
@@ -1541,7 +1541,7 @@ public class FileImportRequest
     public string? Season { get; set; }
 
     /// <summary>
-    /// Import mode: "move" or "copy" (Sonarr-compatible)
+    /// Import mode: "move" or "copy".
     /// - "move" (default): Moves files from source to destination
     /// - "copy": Copies files or creates hardlinks based on settings
     /// </summary>
@@ -1549,7 +1549,7 @@ public class FileImportRequest
 }
 
 /// <summary>
-/// Import mode for library import (matches Sonarr's ImportMode)
+/// Import mode for library import.
 /// </summary>
 public enum LibraryImportMode
 {

@@ -43,9 +43,14 @@ public class TransmissionClient
         {
             if (_customHttpClient == null)
             {
-                var handler = new HttpClientHandler
+                var handler = new SocketsHttpHandler
                 {
-                    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                    SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (sender, cert, chain, errors) => true
+                    }
                 };
                 _customHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(100) };
             }
@@ -85,9 +90,8 @@ public class TransmissionClient
     }
 
     /// <summary>
-    /// Add torrent from URL
-    /// NOTE: Does NOT specify download-dir - Transmission uses its own configured directory
-    /// This matches Sonarr/Radarr behavior
+    /// Add torrent from URL.
+    /// NOTE: Does NOT specify download-dir — Transmission uses its own configured directory.
     /// </summary>
     public async Task<string?> AddTorrentAsync(DownloadClient config, string torrentUrl, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
     {
@@ -127,7 +131,7 @@ public class TransmissionClient
                     var hashString = hash.GetString();
                     _logger.LogInformation("[Transmission] Torrent added: {Hash}", hashString);
 
-                    // Apply per-torrent seed limits from indexer settings (matches Sonarr behavior)
+                    // Apply per-torrent seed limits from indexer settings
                     if (hashString != null && (seedRatioLimit.HasValue || seedTimeLimitMinutes.HasValue))
                     {
                         await SetTorrentSeedingConfigurationAsync(config, hashString, seedRatioLimit, seedTimeLimitMinutes);
@@ -154,7 +158,7 @@ public class TransmissionClient
     }
 
     /// <summary>
-    /// Set per-torrent seeding configuration (matches Sonarr's TransmissionProxy.SetTorrentSeedingConfiguration)
+    /// Set per-torrent seeding configuration via Transmission's torrent-set RPC.
     /// </summary>
     public async Task SetTorrentSeedingConfigurationAsync(DownloadClient config, string hash, double? seedRatioLimit, int? seedTimeLimitMinutes)
     {
@@ -328,6 +332,71 @@ public class TransmissionClient
     }
 
     /// <summary>
+    /// List all torrents matching a category (download directory) for external download detection.
+    /// Transmission has no native category concept — Sportarr's "category" maps to <see cref="DownloadClient.Directory"/>,
+    /// so external detection filters torrents by their download directory. If no directory is configured,
+    /// every torrent returned by Transmission is considered for external import.
+    /// </summary>
+    public async Task<List<ExternalDownloadInfo>> GetAllDownloadsByCategoryAsync(DownloadClient config, string category)
+    {
+        var results = new List<ExternalDownloadInfo>();
+
+        try
+        {
+            var torrents = await GetTorrentsAsync(config);
+            if (torrents == null) return results;
+
+            // Transmission uses download_dir, not category labels. Sportarr's "category" string
+            // is therefore informational only here — we filter by config.Directory if set.
+            var filterDir = config.Directory;
+
+            foreach (var torrent in torrents)
+            {
+                if (!string.IsNullOrWhiteSpace(filterDir) &&
+                    !string.Equals(torrent.DownloadDir, filterDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // Status: 6 = seeding, 5 = seed pending, 0 = stopped (often after completion).
+                // PercentDone is 0-1.
+                var isCompleted = torrent.Status is 5 or 6 || torrent.PercentDone >= 0.999;
+
+                // Append the torrent name so the returned path points at the actual torrent
+                // file/folder rather than just the parent download directory — same convention
+                // as GetTorrentStatusAsync's computedSavePath logic.
+                var savePath = !string.IsNullOrEmpty(torrent.Name) && !string.IsNullOrEmpty(torrent.DownloadDir)
+                    ? System.IO.Path.Combine(torrent.DownloadDir, torrent.Name)
+                    : torrent.DownloadDir;
+
+                results.Add(new ExternalDownloadInfo
+                {
+                    DownloadId = torrent.HashString,
+                    Title = torrent.Name,
+                    Category = category,
+                    FilePath = savePath,
+                    Size = torrent.TotalSize,
+                    IsCompleted = isCompleted,
+                    Protocol = "Torrent",
+                    TorrentInfoHash = torrent.HashString,
+                    CompletedDate = torrent.DoneDate > 0
+                        ? DateTimeOffset.FromUnixTimeSeconds(torrent.DoneDate).UtcDateTime
+                        : (DateTime?)null
+                });
+            }
+
+            _logger.LogDebug("[Transmission] Found {Count} torrents matching directory '{Dir}'",
+                results.Count, filterDir ?? "(any)");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Transmission] Error listing torrents by category");
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Get torrent status for download monitoring
     /// </summary>
     public async Task<DownloadClientStatus?> GetTorrentStatusAsync(DownloadClient config, string hash)
@@ -458,43 +527,50 @@ public class TransmissionClient
             if (!string.IsNullOrEmpty(_authCredentials))
                 requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Basic", _authCredentials);
 
-            var response = await client.SendAsync(requestMessage);
-
-            // Handle session ID requirement (409 Conflict)
-            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            HttpResponseMessage response = await client.SendAsync(requestMessage);
+            try
             {
-                if (response.Headers.TryGetValues("X-Transmission-Session-Id", out var sessionIds))
+                // Handle session ID requirement (409 Conflict)
+                if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
                 {
-                    var newSessionId = sessionIds.FirstOrDefault();
-                    if (string.IsNullOrEmpty(newSessionId))
+                    if (response.Headers.TryGetValues("X-Transmission-Session-Id", out var sessionIds))
                     {
-                        _logger.LogWarning("[Transmission] 409 received but no session ID in response headers");
-                        return null;
+                        var newSessionId = sessionIds.FirstOrDefault();
+                        if (string.IsNullOrEmpty(newSessionId))
+                        {
+                            _logger.LogWarning("[Transmission] 409 received but no session ID in response headers");
+                            return null;
+                        }
+
+                        _sessionIds[sessionKey] = newSessionId;
+                        _logger.LogInformation("[Transmission] Got new session ID");
+
+                        // Retry with new session ID (must create new request message)
+                        var retryMessage = new HttpRequestMessage(HttpMethod.Post, _baseUrl)
+                        {
+                            Content = new StringContent(requestJson, Encoding.UTF8, "application/json")
+                        };
+                        retryMessage.Headers.Add("X-Transmission-Session-Id", newSessionId);
+                        if (!string.IsNullOrEmpty(_authCredentials))
+                            retryMessage.Headers.Authorization = new AuthenticationHeaderValue("Basic", _authCredentials);
+
+                        response.Dispose();
+                        response = await client.SendAsync(retryMessage);
                     }
-
-                    _sessionIds[sessionKey] = newSessionId;
-                    _logger.LogInformation("[Transmission] Got new session ID");
-
-                    // Retry with new session ID (must create new request message)
-                    var retryMessage = new HttpRequestMessage(HttpMethod.Post, _baseUrl)
-                    {
-                        Content = new StringContent(requestJson, Encoding.UTF8, "application/json")
-                    };
-                    retryMessage.Headers.Add("X-Transmission-Session-Id", newSessionId);
-                    if (!string.IsNullOrEmpty(_authCredentials))
-                        retryMessage.Headers.Authorization = new AuthenticationHeaderValue("Basic", _authCredentials);
-
-                    response = await client.SendAsync(retryMessage);
                 }
-            }
 
-            if (response.IsSuccessStatusCode)
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadAsStringAsync();
+                }
+
+                _logger.LogWarning("[Transmission] RPC request failed: {Status}", response.StatusCode);
+                return null;
+            }
+            finally
             {
-                return await response.Content.ReadAsStringAsync();
+                response.Dispose();
             }
-
-            _logger.LogWarning("[Transmission] RPC request failed: {Status}", response.StatusCode);
-            return null;
         }
         catch (OperationCanceledException)
         {

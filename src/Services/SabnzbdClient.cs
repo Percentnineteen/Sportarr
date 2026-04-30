@@ -53,7 +53,7 @@ public class SabnzbdClient
             _logger.LogInformation("[SABnzbd] Fetching NZB from: {Url}", nzbUrl);
 
             // Fetch the NZB file as raw bytes to preserve encoding
-            var response = await _httpClient.GetAsync(nzbUrl);
+            using var response = await _httpClient.GetAsync(nzbUrl);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("[SABnzbd] Failed to fetch NZB: HTTP {StatusCode}. Falling back to addurl mode.", response.StatusCode);
@@ -180,7 +180,7 @@ public class SabnzbdClient
 
         _logger.LogInformation("[SABnzbd] Uploading NZB to SABnzbd: {Filename}, Category: {Category}", filename, category);
 
-        var response = await _httpClient.PostAsync($"{baseUrl}/api", content);
+        using var response = await _httpClient.PostAsync($"{baseUrl}/api", content);
         var responseContent = await response.Content.ReadAsStringAsync();
 
         _logger.LogDebug("[SABnzbd] Upload response: {Response}", responseContent);
@@ -339,8 +339,8 @@ public class SabnzbdClient
     {
         try
         {
-            // Request last 100 items instead of default (10-20) to ensure we find recent downloads
-            // This matches Sonarr/Radarr behavior for reliable progress tracking
+            // Request last 100 items instead of default (10-20) to ensure we find recent downloads.
+            // 100 entries gives reliable progress tracking even when many downloads are queued.
             var response = await SendApiRequestAsync(config, "?mode=history&limit=100&output=json");
 
             if (response != null)
@@ -368,7 +368,7 @@ public class SabnzbdClient
     public async Task<List<ExternalDownloadInfo>> GetAllDownloadsByCategoryAsync(DownloadClient config, string category)
     {
         var results = new List<ExternalDownloadInfo>();
-        var seenIds = new HashSet<string>();
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Check active queue (downloading, unpacking, etc.)
         var queue = await GetQueueAsync(config);
@@ -475,7 +475,11 @@ public class SabnzbdClient
             var queue = await GetQueueByNzoIdsAsync(config, nzoId);
             _logger.LogDebug("[SABnzbd] Filtered queue query returned {Count} items", queue?.Count ?? 0);
 
-            var queueItem = queue?.FirstOrDefault(q => q.nzo_id == nzoId);
+            // Match nzo_id case-insensitively. SABnzbd is normally case-stable but
+            // the rest of the system already treats download IDs case-insensitively
+            // (qBittorrent/Deluge/Transmission all use OrdinalIgnoreCase) so we stay
+            // consistent here to avoid spurious "missing from client" misses.
+            var queueItem = queue?.FirstOrDefault(q => string.Equals(q.nzo_id, nzoId, StringComparison.OrdinalIgnoreCase));
 
             // FALLBACK: If filtered query returns nothing, try full queue
             // This helps diagnose if the issue is filtering or if download isn't in queue at all
@@ -488,7 +492,7 @@ public class SabnzbdClient
                 if (fullQueue != null && fullQueue.Count > 0)
                 {
                     _logger.LogDebug("[SABnzbd] Full queue NZO IDs: {Ids}", string.Join(", ", fullQueue.Select(q => q.nzo_id)));
-                    queueItem = fullQueue.FirstOrDefault(q => q.nzo_id == nzoId);
+                    queueItem = fullQueue.FirstOrDefault(q => string.Equals(q.nzo_id, nzoId, StringComparison.OrdinalIgnoreCase));
 
                     if (queueItem != null)
                     {
@@ -546,7 +550,7 @@ public class SabnzbdClient
             // If not in queue, check history
             var history = await GetHistoryAsync(config);
             _logger.LogDebug("[SABnzbd] History contains {Count} items", history?.Count ?? 0);
-            var historyItem = history?.FirstOrDefault(h => h.nzo_id == nzoId);
+            var historyItem = history?.FirstOrDefault(h => string.Equals(h.nzo_id, nzoId, StringComparison.OrdinalIgnoreCase));
 
             if (historyItem != null)
             {
@@ -615,7 +619,7 @@ public class SabnzbdClient
                     }
                     else
                     {
-                        // Post-processing script failures should not prevent import (Sonarr/Radarr behavior)
+                        // Post-processing script failures should not prevent import.
                         // SABnzbd marks download as "failed" even if download succeeded but post-processing script failed
                         var isPostProcessingFailure =
                             failMessage.Contains("post") ||
@@ -666,36 +670,63 @@ public class SabnzbdClient
     }
 
     /// <summary>
-    /// Delete download from queue or history (Sonarr/Radarr behavior)
+    /// Delete download from queue or history.
     /// </summary>
     public async Task<bool> DeleteDownloadAsync(DownloadClient config, string nzoId, bool deleteFiles = false)
     {
         try
         {
-            // Try to remove from queue first
+            // SABnzbd splits storage between an active queue and a completed-history
+            // store. A download moves out of the queue into history when it finishes,
+            // and the two delete endpoints (?mode=queue&name=delete and ?mode=history
+            // &name=delete) operate independently. The previous implementation called
+            // queue-delete first and short-circuited the history call as soon as the
+            // HTTP request returned a non-null body — but SABnzbd's queue-delete
+            // returns {"status":true,"nzo_ids":[]} even when the nzo_id isn't in the
+            // queue, which the early code read as success. Result: a completed
+            // download sitting in history was never actually removed, the detector
+            // re-found it on the next 30-second poll, and the user got stuck in a
+            // re-add loop.
+            //
+            // The fix: parse the response body, check whether the requested nzo_id
+            // is in the returned nzo_ids list, and ALWAYS try both endpoints. Both
+            // are idempotent on their own (SABnzbd reports success with an empty
+            // list when the id isn't there), so calling both costs at most one
+            // extra HTTP roundtrip and guarantees the entry is gone regardless of
+            // which store it lives in.
+            var deletedFromAnything = false;
             var mode = deleteFiles ? "delete" : "remove";
             var delFilesParam = deleteFiles ? "&del_files=1" : "";
-            var queueResponse = await SendApiRequestAsync(config, $"?mode=queue&name={mode}&value={nzoId}{delFilesParam}");
 
-            if (queueResponse != null)
+            var queueResponse = await SendApiRequestAsync(config, $"?mode=queue&name={mode}&value={nzoId}{delFilesParam}");
+            if (DeletionTouched(queueResponse, nzoId))
             {
-                _logger.LogDebug("[SABnzbd] Removed {NzoId} from queue", nzoId);
-                return true;
+                _logger.LogInformation("[SABnzbd] Removed {NzoId} from queue", nzoId);
+                deletedFromAnything = true;
+            }
+            else
+            {
+                _logger.LogDebug("[SABnzbd] Queue delete reported no change for {NzoId} (likely already in history)", nzoId);
             }
 
-            // If not in queue, try to remove from history
-            // Pass del_files=1 to also delete the files/folder from disk (matches Sonarr behavior)
             var historyDelFilesParam = deleteFiles ? "&del_files=1" : "";
             var historyResponse = await SendApiRequestAsync(config, $"?mode=history&name=delete&value={nzoId}{historyDelFilesParam}");
-
-            if (historyResponse != null)
+            if (DeletionTouched(historyResponse, nzoId))
             {
-                _logger.LogDebug("[SABnzbd] Removed {NzoId} from history", nzoId);
-                return true;
+                _logger.LogInformation("[SABnzbd] Removed {NzoId} from history", nzoId);
+                deletedFromAnything = true;
+            }
+            else
+            {
+                _logger.LogDebug("[SABnzbd] History delete reported no change for {NzoId}", nzoId);
             }
 
-            _logger.LogWarning("[SABnzbd] Download {NzoId} not found in queue or history for deletion", nzoId);
-            return false;
+            if (!deletedFromAnything)
+            {
+                _logger.LogWarning("[SABnzbd] Neither queue nor history acknowledged deletion of {NzoId} — already gone, or SABnzbd did not return the id in nzo_ids", nzoId);
+            }
+
+            return deletedFromAnything;
         }
         catch (Exception ex)
         {
@@ -704,12 +735,42 @@ public class SabnzbdClient
         }
     }
 
+    /// <summary>
+    /// SABnzbd's delete endpoints return {"status":true,"nzo_ids":[…]} where
+    /// the array contains the nzo_ids that were actually affected. An empty
+    /// array means SABnzbd accepted the request but didn't have anything
+    /// matching to remove. Returns true only when the requested id appears
+    /// in the returned list.
+    /// </summary>
+    private static bool DeletionTouched(string? response, string nzoId)
+    {
+        if (string.IsNullOrEmpty(response)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(response);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("status", out var statusProp) || !statusProp.GetBoolean()) return false;
+            if (!root.TryGetProperty("nzo_ids", out var idsProp) || idsProp.ValueKind != JsonValueKind.Array) return false;
+            foreach (var idElement in idsProp.EnumerateArray())
+            {
+                var s = idElement.GetString();
+                if (!string.IsNullOrEmpty(s) && string.Equals(s, nzoId, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // Private helper methods
 
     /// <summary>
-    /// Send POST request for addfile mode - uploads NZB content directly to SABnzbd
-    /// This matches Sonarr/Radarr behavior and works when SABnzbd is on a different network than the indexer
-    /// Returns: (response, shouldFallbackToUrl) - shouldFallbackToUrl is true when addfile mode isn't supported
+    /// Send POST request for addfile mode - uploads NZB content directly to SABnzbd.
+    /// Works when SABnzbd is on a different network than the indexer.
+    /// Returns: (response, shouldFallbackToUrl) - shouldFallbackToUrl is true when addfile mode isn't supported.
     /// </summary>
     private async Task<(string? Response, bool ShouldFallbackToUrl)> SendAddFileRequestAsync(
         DownloadClient config, byte[] nzbData, string filename, string category, string originalUrl)
@@ -730,7 +791,7 @@ public class SabnzbdClient
 
             var baseUrl = $"{protocol}://{config.Host}:{config.Port}{urlBase}/api";
 
-            // Build multipart form data for addfile request (matches Sonarr implementation)
+            // Build multipart form data for addfile request
             using var content = new MultipartFormDataContent();
 
             // Add mode parameter
@@ -953,7 +1014,7 @@ public class SabnzbdClient
 
             var baseUrl = $"{protocol}://{config.Host}:{config.Port}{urlBase}/api";
 
-            // Add authentication - prefer API key, fallback to username/password (matches Sonarr implementation)
+            // Add authentication - prefer API key, fallback to username/password
             string url;
             if (!string.IsNullOrWhiteSpace(config.ApiKey))
             {

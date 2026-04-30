@@ -3,8 +3,8 @@ using System.Text.RegularExpressions;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Detects language from release titles.
-/// Based on Sonarr's language detection patterns.
+/// Detects language from release titles via pattern matching on common
+/// scene tags (e.g. "FR", "FRENCH", "MULTI", "DUAL").
 /// </summary>
 public static class LanguageDetector
 {
@@ -97,8 +97,8 @@ public static class LanguageDetector
             }
         }
 
-        // No explicit language found - default to English (Sonarr behavior)
-        // Most releases without explicit language tags are English
+        // No explicit language found - default to English.
+        // Most releases without explicit language tags are English.
         return "English";
     }
 

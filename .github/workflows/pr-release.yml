@@ -18,6 +18,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Quick container-config lint. Runs early so a Dockerfile/entrypoint
+      # regression fails the PR before we burn the rest of the build budget.
+      # Non-blocking by default: continue-on-error keeps the PR mergeable so
+      # the rest of the pipeline still completes, but the findings show up on
+      # the run summary.
+      - name: Lint Dockerfile and entrypoint for misconfigurations
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        with:
+          scan-type: config
+          scan-ref: '.'
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+
       - name: Get version info
         id: version
         run: |

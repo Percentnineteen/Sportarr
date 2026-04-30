@@ -7,10 +7,9 @@ namespace Sportarr.Api.Services;
 /// <summary>
 /// Service for season-level search operations.
 /// Unlike per-event searches, season search finds releases that match ANY event in the season,
-/// allowing users to grab season packs that contain multiple events.
-///
-/// This is similar to how Sonarr handles season pack searching - when a user clicks "Search Season",
-/// it searches for releases matching the show + season, then matches individual episodes from the pack.
+/// allowing users to grab season packs that contain multiple events. When the user clicks
+/// "Search Season", we search for releases matching the league + season, then match individual
+/// events out of any pack we land on.
 /// </summary>
 public class SeasonSearchService
 {

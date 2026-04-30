@@ -3,8 +3,8 @@ using System.Text.Json.Serialization;
 namespace Sportarr.Api.Models;
 
 /// <summary>
-/// Monitoring type for league events (similar to Sonarr's monitor types)
-/// Determines which events are automatically monitored when syncing
+/// Monitoring type for league events.
+/// Determines which events are automatically monitored when syncing.
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum MonitorType
@@ -46,9 +46,8 @@ public enum MonitorType
 }
 
 /// <summary>
-/// Represents a sports league/competition (e.g., NFL, NBA, UFC, Premier League)
-/// Replaces the concept of Organization for universal sports support
-/// Similar to Sonarr's Series concept - a container for events/games/matches
+/// Represents a sports league/competition (e.g., NFL, NBA, UFC, Premier League).
+/// A container for events/games/matches that share monitoring and quality settings.
 /// </summary>
 public class League
 {

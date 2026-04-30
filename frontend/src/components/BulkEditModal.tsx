@@ -45,6 +45,7 @@ const BulkEditModal: React.FC<BulkEditModalProps> = ({
     'Early Prelims': true,
     'Prelims': true,
     'Main Card': true,
+    'Post Show': true,
   });
 
   useEffect(() => {
@@ -211,6 +212,7 @@ const BulkEditModal: React.FC<BulkEditModalProps> = ({
         'Early Prelims': true,
         'Prelims': true,
         'Main Card': true,
+        'Post Show': true,
       });
 
       onSaveSuccess();
@@ -236,6 +238,7 @@ const BulkEditModal: React.FC<BulkEditModalProps> = ({
       'Early Prelims': true,
       'Prelims': true,
       'Main Card': true,
+      'Post Show': true,
     });
     onClose();
   };
@@ -454,6 +457,27 @@ const BulkEditModal: React.FC<BulkEditModalProps> = ({
                           <span
                             className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
                               fightCardSettings['Main Card'] ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Post Show */}
+                      <div className="flex items-center justify-between bg-gray-700/50 rounded-lg p-3">
+                        <div>
+                          <p className="text-sm font-medium text-white">Post Show</p>
+                          <p className="text-xs text-gray-400">Post-fight show (PPV events only)</p>
+                        </div>
+                        <button
+                          onClick={() => toggleFightCard('Post Show')}
+                          disabled={!changeFightCards}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                            fightCardSettings['Post Show'] ? 'bg-red-600' : 'bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              fightCardSettings['Post Show'] ? 'translate-x-6' : 'translate-x-1'
                             }`}
                           />
                         </button>

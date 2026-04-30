@@ -17,7 +17,7 @@ import { useUISettings } from '../hooks/useUISettings';
 import { useCompactView } from '../hooks/useCompactView';
 import { formatDateInTimezone } from '../utils/timezone';
 import { PAGE_PADDING, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_INFO, BUTTON_DESTRUCTIVE } from '../utils/designTokens';
-import { isMotorsport, isFightingSport } from '../utils/leagueSportRules';
+import { isFightingSport, isTeamlessSport, usesFightingEventTypes } from '../utils/leagueSportRules';
 
 // Type for the league prop passed to AddLeagueModal
 interface ModalLeagueData {
@@ -64,6 +64,7 @@ interface LeagueDetail {
   searchForCutoffUnmetEvents?: boolean;
   monitoredParts?: string;
   monitoredSessionTypes?: string;
+  monitoredEventTypes?: string;
   logoUrl?: string;
   bannerUrl?: string;
   posterUrl?: string;
@@ -514,7 +515,13 @@ export default function LeagueDetailPage() {
       tags?: number[];
       searchQueryTemplate?: string | null;
     }) => {
-      const isMotorsportLeague = league?.sport ? isMotorsport(league.sport) : false;
+      const sport = league?.sport ?? '';
+      const name = league?.name ?? '';
+      // Fighting leagues that monitor by event type (UFC, WWE, ONE) hide the team
+      // picker, so they must be treated as teamless when computing `monitored` —
+      // otherwise an empty monitoredTeamIds array forces the league off and
+      // overrides the user's event-type selection.
+      const treatAsTeamless = sport ? (isTeamlessSport(sport, name) || usesFightingEventTypes(sport, name)) : false;
 
       // Build the payload - only include monitored if monitoredTeamIds was explicitly provided
       // This prevents inline settings changes (like monitorType dropdown) from accidentally
@@ -524,16 +531,14 @@ export default function LeagueDetailPage() {
 
       // Only recalculate monitored if monitoredTeamIds was explicitly provided (from edit modal)
       if (settings.monitoredTeamIds !== undefined) {
-        // For motorsports, league is always monitored
-        // For other sports, league is monitored only if teams are selected
-        payload.monitored = isMotorsportLeague ? true : (settings.monitoredTeamIds.length > 0);
+        payload.monitored = treatAsTeamless ? true : (settings.monitoredTeamIds.length > 0);
       }
 
       // Update league settings
       const response = await apiClient.put(`/leagues/${id}`, payload);
 
-      // Update monitored teams (only for non-motorsport)
-      if (!isMotorsportLeague && settings.monitoredTeamIds !== undefined) {
+      // Update monitored teams (skip for leagues without team selection)
+      if (!treatAsTeamless && settings.monitoredTeamIds !== undefined) {
         await apiClient.put(`/leagues/${id}/teams`, {
           monitoredTeamIds: settings.monitoredTeamIds.length > 0 ? settings.monitoredTeamIds : null,
         });
@@ -986,6 +991,7 @@ export default function LeagueDetailPage() {
     { name: 'Early Prelims', label: 'Early Prelims' },
     { name: 'Prelims', label: 'Prelims' },
     { name: 'Main Card', label: 'Main Card' },
+    { name: 'Post Show', label: 'Post Show' },
   ];
 
   // Get parts for an event - uses event-specific partStatuses from API (which is event-type-aware)

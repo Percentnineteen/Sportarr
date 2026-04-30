@@ -3,9 +3,9 @@ using System.Collections.Concurrent;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// HTTP-level rate limiting service that matches Sonarr/Radarr's implementation.
+/// HTTP-level rate limiting service.
 /// Uses a two-level key system (host + subkey) to enforce per-indexer rate limits.
-/// This is enforced at the HTTP client layer, not the application layer, to create
+/// Enforced at the HTTP client layer, not the application layer, to create
 /// natural request distribution instead of predictable patterns.
 /// </summary>
 public interface IRateLimitService
@@ -26,7 +26,7 @@ public interface IRateLimitService
 }
 
 /// <summary>
-/// Sonarr-style rate limit service implementation.
+/// Rate limit service implementation.
 /// Key features:
 /// - Two-level keying (host + indexer ID) prevents one indexer from blocking others on the same host
 /// - Random jitter (0-500ms) prevents predictable bot-like patterns

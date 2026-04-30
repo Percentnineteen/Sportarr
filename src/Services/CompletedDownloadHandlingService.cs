@@ -5,9 +5,9 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Background service that monitors download clients for completed downloads
-/// Implements Sonarr/Radarr-style Completed Download Handling
-/// Polls download clients every 60 seconds to check for completed downloads
+/// Background service that monitors download clients for completed downloads.
+/// Polls each download client every 60 seconds to check for completion and
+/// hands the resulting files to the import pipeline.
 /// </summary>
 public class CompletedDownloadHandlingService : BackgroundService
 {
@@ -153,8 +153,8 @@ public class CompletedDownloadHandlingService : BackgroundService
                 // FileImportService already sets download.Status to Imported
                 _logger.LogInformation("[Completed Download Handler] Successfully imported: {Title}", download.Title);
 
-                // Move to post-import category if configured (Sonarr feature)
-                // This allows users to separate active downloads from completed/seeding torrents
+                // Move to post-import category if configured.
+                // This lets users separate active downloads from completed/seeding torrents.
                 if (!string.IsNullOrEmpty(downloadClient.PostImportCategory) &&
                     downloadClient.PostImportCategory != downloadClient.Category)
                 {
@@ -176,7 +176,7 @@ public class CompletedDownloadHandlingService : BackgroundService
                     }
                     catch (Exception ex)
                     {
-                        // Don't fail the import if category change fails (Sonarr behavior)
+                        // Don't fail the import if category change fails.
                         _logger.LogWarning(ex, "[Completed Download Handler] Failed to set post-import category for {Title}",
                             download.Title);
                     }

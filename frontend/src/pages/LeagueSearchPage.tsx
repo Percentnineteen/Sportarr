@@ -12,7 +12,7 @@ import AddLeagueModal from '../components/AddLeagueModal';
 import ConfirmationModal from '../components/ConfirmationModal';
 import { apiGet, apiPost, apiPut, apiDelete } from '../utils/api';
 import { PAGE_PADDING, TABLE_ROW_HOVER } from '../utils/designTokens';
-import { isMotorsport, isGolf, isIndividualTennis, isFightingSport } from '../utils/leagueSportRules';
+import { isMotorsport, isGolf, isIndividualTennis, isTeamlessSport, usesFightingEventTypes } from '../utils/leagueSportRules';
 import { getSportIcon } from '../utils/sportIcons';
 import { BUTTON_PRIMARY, BUTTON_INFO } from '../utils/designTokens';
 
@@ -189,13 +189,13 @@ export default function LeagueSearchPage() {
       searchQueryTemplate?: string | null;
       tags?: number[];
     }) => {
-      // For motorsports, golf, individual tennis (ATP, WTA), and UFC-style fighting leagues, league is always monitored
-      // For other sports, league is monitored only if teams are selected
-      const isMotorsportLeague = isMotorsport(league.strSport);
-      const isGolfLeague = isGolf(league.strSport);
-      const isIndividualTennisLeague = isIndividualTennis(league.strSport, league.strLeague);
-      const isFightingEventTypeLeague = isFightingSport(league.strSport) && (league.strLeague.toLowerCase().includes('ufc') || league.strLeague.toLowerCase().includes('ultimate fighting'));
-      const monitored = isMotorsportLeague || isGolfLeague || isIndividualTennisLeague || isFightingEventTypeLeague ? true : monitoredTeamIds.length > 0;
+      // Teamless sports (motorsport, golf, darts, climbing, gambling, individual
+      // tennis, badminton, table tennis, snooker) and fighting leagues that
+      // monitor by event type (UFC, WWE, ONE) auto-monitor on add. Everything
+      // else requires at least one selected team.
+      const monitored = isTeamlessSport(league.strSport, league.strLeague) ||
+        usesFightingEventTypes(league.strSport, league.strLeague) ||
+        monitoredTeamIds.length > 0;
 
       const response = await apiPost('/api/leagues', {
         externalId: league.idLeague,
@@ -290,13 +290,13 @@ export default function LeagueSearchPage() {
       sport: string;
       leagueName: string;
     }) => {
-      // For motorsports, golf, individual tennis (ATP, WTA), and UFC-style fighting leagues, league is always monitored
-      // For other sports, league is monitored only if teams are selected
+      // Teamless sports auto-monitor; other sports require at least one selected team.
       const isMotorsportLeague = isMotorsport(sport);
       const isGolfLeague = isGolf(sport);
       const isIndividualTennisLeague = isIndividualTennis(sport, leagueName);
-      const isFightingEventTypeLeague = isFightingSport(sport) && (leagueName.toLowerCase().includes('ufc') || leagueName.toLowerCase().includes('ultimate fighting'));
-      const monitored = isMotorsportLeague || isGolfLeague || isIndividualTennisLeague || isFightingEventTypeLeague ? true : monitoredTeamIds.length > 0;
+      const monitored = isTeamlessSport(sport, leagueName) ||
+        usesFightingEventTypes(sport, leagueName) ||
+        monitoredTeamIds.length > 0;
 
       // First update the league settings
       const settingsResponse = await apiPut(`/api/leagues/${leagueId}`, {

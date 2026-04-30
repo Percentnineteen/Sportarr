@@ -6,13 +6,13 @@ using System.Text.RegularExpressions;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// RSS Sync background service - Sonarr-style passive discovery
+/// RSS Sync background service — passive discovery of new releases.
 ///
 /// CRITICAL ARCHITECTURAL CHANGE:
 /// - OLD APPROACH: Search per monitored event = N queries per sync (thousands of queries/day)
 /// - NEW APPROACH: Fetch RSS feeds once per indexer = M queries per sync (24-100 queries/day)
 ///
-/// How Sonarr/Radarr RSS sync works:
+/// How RSS sync works:
 /// 1. Every X minutes (default 15), fetch RSS feeds from all RSS-enabled indexers
 /// 2. RSS feeds return the latest 50-100 releases WITHOUT a search query
 /// 3. Locally compare those releases against ALL monitored items
@@ -40,7 +40,7 @@ public class RssSyncService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("[RSS Sync] Service started - Sonarr-style passive discovery enabled");
+        _logger.LogInformation("[RSS Sync] Service started - passive discovery enabled");
 
         // Wait before starting to allow app to fully initialize
         await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
@@ -54,7 +54,7 @@ public class RssSyncService : BackgroundService
                 var configService = scope.ServiceProvider.GetRequiredService<ConfigService>();
                 var config = await configService.GetConfigAsync();
 
-                // Validate and clamp interval to safe bounds (Sonarr: min 10, max 120 minutes)
+                // Validate and clamp interval to safe bounds (min 10, max 120 minutes)
                 var intervalMinutes = Math.Clamp(config.RssSyncInterval, 10, 120);
                 var syncInterval = TimeSpan.FromMinutes(intervalMinutes);
 
@@ -83,7 +83,7 @@ public class RssSyncService : BackgroundService
     }
 
     /// <summary>
-    /// Perform Sonarr-style RSS sync:
+    /// Perform a passive RSS sync:
     /// 1. Fetch all RSS feeds (ONE query per indexer)
     /// 2. Match releases locally against monitored events
     /// 3. Grab matching releases
@@ -128,22 +128,22 @@ public class RssSyncService : BackgroundService
         _logger.LogDebug("[RSS Sync] {Count} releases within {Days}-day age limit (RSS limit: {RssLimit}, Indexer retention: {Retention})",
             recentReleases.Count, effectiveAgeLimit, rssAgeLimit, indexerRetention > 0 ? indexerRetention : "disabled");
 
-        // STEP 2: Get all monitored events that need content
-        // Include both missing files AND files that might need quality upgrades
-        // UNAIRED EVENT FILTER (Sonarr-style): Exclude events that haven't occurred yet
-        // This prevents grabbing releases for future events (e.g., MotoGP race next month matched to F1 event)
-        // Allow a 24-hour grace period for timezone differences and early releases
-        var unairedCutoff = DateTime.UtcNow.AddHours(24);
+        // STEP 2: Get all monitored events that have aired. Pre-event scene
+        // fakes are rejected at the release level (PublishDate < EventDate),
+        // so the trigger here is just "the event has started." This avoids
+        // gating sport durations differently (a 90m soccer match vs a 6h MMA
+        // PPV both work the same way).
+        var nowUtc = DateTime.UtcNow;
         var monitoredEvents = await db.Events
             .Include(e => e.League)
             .Include(e => e.HomeTeam)
             .Include(e => e.AwayTeam)
-            .Where(e => e.Monitored && e.League != null && e.EventDate <= unairedCutoff)
+            .Where(e => e.Monitored && e.League != null && e.EventDate <= nowUtc)
             .ToListAsync(cancellationToken);
 
         if (!monitoredEvents.Any())
         {
-            _logger.LogDebug("[RSS Sync] No monitored events (that have aired)");
+            _logger.LogDebug("[RSS Sync] No monitored events have aired yet");
             return;
         }
 
@@ -151,14 +151,14 @@ public class RssSyncService : BackgroundService
         var missingEvents = monitoredEvents.Where(e => !e.HasFile).ToList();
         var upgradeEvents = monitoredEvents.Where(e => e.HasFile).ToList();
 
-        _logger.LogInformation("[RSS Sync] Matching {ReleaseCount} releases against {Missing} missing + {Upgrade} upgrade candidates (excluded unaired events after {Cutoff})",
-            recentReleases.Count, missingEvents.Count, upgradeEvents.Count, unairedCutoff.ToString("yyyy-MM-dd HH:mm"));
+        _logger.LogInformation("[RSS Sync] Matching {ReleaseCount} releases against {Missing} missing + {Upgrade} upgrade candidates",
+            recentReleases.Count, missingEvents.Count, upgradeEvents.Count);
 
         int newDownloadsAdded = 0;
         int upgradesFound = 0;
 
-        // Pre-load quality profiles, custom formats, and release profiles for evaluation (like Sonarr does)
-        // Note: Specifications is stored as JSON in CustomFormat, not a navigation property, so no Include needed
+        // Pre-load quality profiles, custom formats, and release profiles for evaluation.
+        // Note: Specifications is stored as JSON in CustomFormat, not a navigation property, so no Include needed.
         var qualityProfiles = await db.QualityProfiles.ToListAsync(cancellationToken);
         var customFormats = await db.CustomFormats.ToListAsync(cancellationToken);
         var releaseProfiles = await releaseProfileService.LoadReleaseProfilesAsync();
@@ -181,8 +181,8 @@ public class RssSyncService : BackgroundService
                 if (matchedEvent == null)
                     continue;
 
-                // SONARR PARITY: Evaluate release against quality profile and custom formats
-                // This is the SAME evaluation that manual search uses - identical decision engine
+                // Evaluate release against quality profile and custom formats.
+                // This is the SAME evaluation that manual search uses — identical decision engine.
                 var qualityProfile = matchedEvent.QualityProfileId.HasValue
                     ? qualityProfiles.FirstOrDefault(p => p.Id == matchedEvent.QualityProfileId.Value)
                     : qualityProfiles.OrderBy(q => q.Id).FirstOrDefault();
@@ -281,8 +281,12 @@ public class RssSyncService : BackgroundService
     }
 
     /// <summary>
-    /// Find a monitored event that matches this release
-    /// Uses the ReleaseMatchingService for Sonarr-style validation
+    /// Find the BEST monitored event that matches this release.
+    /// Evaluates all candidate events, scores each, and returns the
+    /// highest-confidence match. Previously this was first-match-wins which
+    /// could grab a release for the wrong event when a release matched
+    /// multiple monitored events (common for fight cards where Prelims and
+    /// Main Card are separate events but share keywords).
     /// </summary>
     private Event? FindMatchingEvent(
         ReleaseSearchResult release,
@@ -290,43 +294,49 @@ public class RssSyncService : BackgroundService
         ReleaseMatchingService matchingService,
         bool enableMultiPartEpisodes)
     {
-        // Quick pre-filter: extract potential event identifiers from release title
         var releaseTitle = release.Title.ToLowerInvariant();
+        Event? bestMatch = null;
+        int bestConfidence = int.MinValue;
 
         foreach (var evt in monitoredEvents)
         {
-            // Quick check: does release title contain key words from event title?
+            // Quick pre-filter: skip events whose title shares no keywords with the release.
             var eventKeywords = ExtractKeywords(evt.Title);
             if (!eventKeywords.Any(kw => releaseTitle.Contains(kw)))
                 continue;
 
-            // Full validation using ReleaseMatchingService
             var matchResult = matchingService.ValidateRelease(release, evt, null, enableMultiPartEpisodes);
+            if (!matchResult.IsMatch || matchResult.IsHardRejection)
+                continue;
 
-            if (matchResult.IsMatch && !matchResult.IsHardRejection)
+            // Honor league custom-search-template required keywords.
+            var template = evt.League?.SearchQueryTemplate;
+            if (!string.IsNullOrWhiteSpace(template))
             {
-                // Check SearchQueryTemplate keywords - if the league has a custom search template,
-                // the release must contain all literal keywords from it (e.g., "f1tv" from "formula1 f1tv {Year}")
-                var template = evt.League?.SearchQueryTemplate;
-                if (!string.IsNullOrWhiteSpace(template))
+                var requiredKeywords = ExtractRequiredKeywordsFromTemplate(template);
+                if (requiredKeywords.Any() && !ReleaseSatisfiesTemplateKeywords(release.Title, requiredKeywords))
                 {
-                    var requiredKeywords = ExtractRequiredKeywordsFromTemplate(template);
-                    if (requiredKeywords.Any() && !ReleaseSatisfiesTemplateKeywords(release.Title, requiredKeywords))
-                    {
-                        _logger.LogDebug(
-                            "[RSS Sync] Release '{Release}' matched event '{Event}' but missing required search template keywords: {Keywords}",
-                            release.Title, evt.Title, string.Join(", ", requiredKeywords));
-                        continue;
-                    }
+                    _logger.LogDebug(
+                        "[RSS Sync] Release '{Release}' matched event '{Event}' but missing required search template keywords: {Keywords}",
+                        release.Title, evt.Title, string.Join(", ", requiredKeywords));
+                    continue;
                 }
+            }
 
-                _logger.LogDebug("[RSS Sync] Release '{Release}' matches event '{Event}' (confidence: {Confidence}%)",
-                    release.Title, evt.Title, matchResult.Confidence);
-                return evt;
+            if (matchResult.Confidence > bestConfidence)
+            {
+                bestConfidence = matchResult.Confidence;
+                bestMatch = evt;
             }
         }
 
-        return null;
+        if (bestMatch != null)
+        {
+            _logger.LogDebug("[RSS Sync] Release '{Release}' best match: event '{Event}' (confidence: {Confidence})",
+                release.Title, bestMatch.Title, bestConfidence);
+        }
+
+        return bestMatch;
     }
 
     /// <summary>
@@ -403,6 +413,21 @@ public class RssSyncService : BackgroundService
         DownloadClientService downloadClientService,
         CancellationToken cancellationToken)
     {
+        // 0. Minimum age: wait N minutes after the indexer posted the release
+        // before grabbing it. Helps Usenet posts settle and gives torrent
+        // swarms time to attract seeders.
+        if (config.IndexerMinimumAgeMinutes > 0 && release.PublishDate != default)
+        {
+            var ageMinutes = (DateTime.UtcNow - release.PublishDate).TotalMinutes;
+            if (ageMinutes < config.IndexerMinimumAgeMinutes)
+            {
+                var waitMinutes = config.IndexerMinimumAgeMinutes - ageMinutes;
+                return (false,
+                    $"Release too new ({ageMinutes:F0}m old, minimum {config.IndexerMinimumAgeMinutes}m). Will retry in {waitMinutes:F0}m.",
+                    null);
+            }
+        }
+
         // 1. Detect part FIRST (for fighting sports) - needed for all subsequent checks
         string? releasePart = null;
         if (EventPartDetector.IsFightingSport(evt.Sport ?? ""))
@@ -493,7 +518,7 @@ public class RssSyncService : BackgroundService
         if (isBlocklisted)
             return (false, "Blocklisted", releasePart);
 
-        // 3b. Check GrabHistory - prevent re-grabbing same release (Sonarr HistorySpecification)
+        // 3b. Check GrabHistory - prevent re-grabbing the same release.
         bool alreadyGrabbed = false;
 
         if (!string.IsNullOrEmpty(release.TorrentInfoHash))
@@ -597,20 +622,115 @@ public class RssSyncService : BackgroundService
         if (qualityProfile == null)
             return (false, "No quality profile", releasePart);
 
-        // 7. Check delay profile
+        // 7. Check delay profile: hold release for N minutes so a higher-quality
+        // release can win before we commit. Bypass conditions grab immediately;
+        // otherwise persist to PendingReleases and let the
+        // PendingReleaseReaperService pick the best-of-window once the timer
+        // expires.
         var delayProfile = await delayProfileService.GetDelayProfileForEventAsync(evt.Id);
-        if (delayProfile != null && delayProfile.UsenetDelay > 0 && release.Protocol == "Usenet")
+        if (delayProfile != null)
         {
-            // Check if we should wait for better release
-            // (Simplified - full implementation would track pending releases)
+            var protocolDelay = release.Protocol.Equals("Usenet", StringComparison.OrdinalIgnoreCase)
+                ? delayProfile.UsenetDelay
+                : delayProfile.TorrentDelay;
+
+            if (protocolDelay > 0)
+            {
+                var bypass = false;
+                if (delayProfile.BypassIfAboveCustomFormatScore &&
+                    release.CustomFormatScore >= delayProfile.MinimumCustomFormatScore)
+                {
+                    bypass = true;
+                    _logger.LogDebug("[RSS Sync] Delay bypassed - CF score {Score} >= minimum {Min}",
+                        release.CustomFormatScore, delayProfile.MinimumCustomFormatScore);
+                }
+
+                if (!bypass)
+                {
+                    // Honor age of the release — the delay clock starts at
+                    // PublishDate, so older releases may already be past the window.
+                    var elapsedSincePublish = DateTime.UtcNow - release.PublishDate;
+                    var releasableAt = release.PublishDate.AddMinutes(protocolDelay);
+
+                    if (elapsedSincePublish.TotalMinutes >= protocolDelay)
+                    {
+                        // Already past the delay window - grab now.
+                        _logger.LogDebug("[RSS Sync] Delay already elapsed for '{Title}' (published {Mins:F0}m ago)",
+                            release.Title, elapsedSincePublish.TotalMinutes);
+                    }
+                    else
+                    {
+                        // Hold this release. Insert into PendingReleases unless we
+                        // already track it (same Guid for same event).
+                        var alreadyPending = await db.PendingReleases
+                            .AnyAsync(p => p.EventId == evt.Id
+                                && p.Guid == release.Guid
+                                && p.Status == PendingReleaseStatus.Pending,
+                                cancellationToken);
+
+                        if (!alreadyPending)
+                        {
+                            db.PendingReleases.Add(new PendingRelease
+                            {
+                                EventId = evt.Id,
+                                Title = release.Title,
+                                Guid = release.Guid,
+                                DownloadUrl = release.DownloadUrl,
+                                InfoUrl = release.InfoUrl,
+                                Indexer = release.Indexer,
+                                IndexerId = release.IndexerId,
+                                TorrentInfoHash = release.TorrentInfoHash,
+                                Protocol = release.Protocol,
+                                Size = release.Size,
+                                Quality = release.Quality,
+                                Source = release.Source,
+                                Codec = release.Codec,
+                                Language = release.Language,
+                                ReleaseGroup = release.ReleaseGroup,
+                                QualityScore = release.QualityScore,
+                                CustomFormatScore = release.CustomFormatScore,
+                                Score = release.Score,
+                                MatchScore = release.MatchScore,
+                                Part = releasePart,
+                                Seeders = release.Seeders,
+                                Leechers = release.Leechers,
+                                PublishDate = release.PublishDate,
+                                AddedToPendingAt = DateTime.UtcNow,
+                                ReleasableAt = releasableAt,
+                                Reason = $"DelayProfile-{release.Protocol}-{protocolDelay}m",
+                                Status = PendingReleaseStatus.Pending
+                            });
+                            await db.SaveChangesAsync(cancellationToken);
+
+                            _logger.LogInformation(
+                                "[RSS Sync] Held release '{Title}' for event '{Event}' until {ReleasableAt} ({Delay}m delay)",
+                                release.Title, evt.Title, releasableAt, protocolDelay);
+                        }
+
+                        return (false, $"Held by delay profile until {releasableAt:HH:mm}", releasePart);
+                    }
+                }
+            }
         }
 
-        // 8. Check if release quality is allowed
+        // 8. Check if release quality is allowed AND has no rejections.
+        // Approved=true alone isn't sufficient: ReleaseEvaluator sets Approved=true
+        // even when rejections (e.g. MinFormatScore below threshold, size limits,
+        // 0 seeders) were added, leaving downstream filters to enforce them.
         if (!release.Approved)
             return (false, "Quality not approved", releasePart);
+        if (release.Rejections != null && release.Rejections.Count > 0)
+            return (false, $"Release rejected: {release.Rejections[0]}", releasePart);
 
         return (true, "OK", releasePart);
     }
+
+    // Process-wide lock around the upgrade-cancel sequence. Without it, two
+    // concurrent callers (a future parallel RSS pass, an API-triggered sync,
+    // or a manual upgrade) can both fetch the same queue item, both call
+    // RemoveDownloadAsync against the client, and both attempt to delete the
+    // same DB row - racing with confusing error messages and partial state.
+    private static readonly SemaphoreSlim _queueUpgradeLock = new(1, 1);
 
     /// <summary>
     /// Remove a queue item and cancel its download in the download client.
@@ -622,28 +742,44 @@ public class RssSyncService : BackgroundService
         DownloadClientService downloadClientService,
         CancellationToken cancellationToken)
     {
-        // Get download client to cancel the download
-        var downloadClient = await db.DownloadClients
-            .FirstOrDefaultAsync(dc => dc.Id == queueItem.DownloadClientId, cancellationToken);
-
-        if (downloadClient != null && !string.IsNullOrEmpty(queueItem.DownloadId))
+        await _queueUpgradeLock.WaitAsync(cancellationToken);
+        try
         {
-            try
+            // Re-load the queue item under the lock - another worker may have
+            // already cancelled and removed it in the time we waited.
+            var current = await db.DownloadQueue
+                .FirstOrDefaultAsync(q => q.Id == queueItem.Id, cancellationToken);
+            if (current == null)
             {
-                await downloadClientService.RemoveDownloadAsync(downloadClient, queueItem.DownloadId, deleteFiles: true);
-                _logger.LogInformation("[RSS Sync] Cancelled download {DownloadId} to upgrade to better release",
-                    queueItem.DownloadId);
+                _logger.LogDebug("[RSS Sync] Queue item {Id} already removed by another worker", queueItem.Id);
+                return;
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[RSS Sync] Failed to cancel download {DownloadId}, proceeding anyway",
-                    queueItem.DownloadId);
-            }
-        }
 
-        // Remove from queue
-        db.DownloadQueue.Remove(queueItem);
-        await db.SaveChangesAsync(cancellationToken);
+            var downloadClient = await db.DownloadClients
+                .FirstOrDefaultAsync(dc => dc.Id == current.DownloadClientId, cancellationToken);
+
+            if (downloadClient != null && !string.IsNullOrEmpty(current.DownloadId))
+            {
+                try
+                {
+                    await downloadClientService.RemoveDownloadAsync(downloadClient, current.DownloadId, deleteFiles: true);
+                    _logger.LogInformation("[RSS Sync] Cancelled download {DownloadId} to upgrade to better release",
+                        current.DownloadId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[RSS Sync] Failed to cancel download {DownloadId}, proceeding anyway",
+                        current.DownloadId);
+                }
+            }
+
+            db.DownloadQueue.Remove(current);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        finally
+        {
+            _queueUpgradeLock.Release();
+        }
     }
 
     /// <summary>

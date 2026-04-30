@@ -5,8 +5,9 @@ using Microsoft.EntityFrameworkCore;
 namespace Sportarr.Api.Services;
 
 /// <summary>
-/// Service for providing import items with path translation and validation
-/// Follows Radarr/Sonarr pattern for remote path mapping and import item generation
+/// Service for providing import items with path translation and validation.
+/// Resolves remote-path mappings and produces ImportItem records the import
+/// pipeline can consume.
 /// </summary>
 public class ProvideImportItemService
 {

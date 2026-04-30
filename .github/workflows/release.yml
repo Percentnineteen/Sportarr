@@ -88,7 +88,14 @@ jobs:
           # Write raw commits to a temp file to avoid shell quoting issues
           echo "$RAW_COMMITS" > /tmp/raw_commits.txt
 
-          # Categorize commits into clean, summarized release notes
+          # ---------------------------------------------------------------
+          # Categorize commits into a fallback auto-generated changelog.
+          # The curated-body override below replaces this output when the
+          # release commit has a hand-written changelog in its body, but
+          # this auto-categorizer remains the safety net for releases that
+          # don't carry a curated message (bot-driven bumps, ad-hoc pushes,
+          # etc.) and for the very first release with no previous tag.
+          # ---------------------------------------------------------------
           python3 << 'PYEOF'
           import re
 
@@ -132,6 +139,70 @@ jobs:
           with open("release_notes.md", "w") as f:
             f.write("\n".join(lines) + "\n")
           PYEOF
+
+          # ---------------------------------------------------------------
+          # Curated-changelog override
+          # ---------------------------------------------------------------
+          # dev → main lands as a single squash commit per release. When the
+          # release commit's body carries a hand-written changelog (### sections,
+          # bullets, prose), we want THAT to appear on the GitHub release page
+          # and in the Discord embed — not the %s-only auto-categorization,
+          # which drops the body entirely and renders the giant subject as one
+          # run-on bullet under "Improvements".
+          #
+          # Detection rule: exactly one non-[skip ci] commit between PREVIOUS_TAG
+          # and HEAD~1 (HEAD is the bot's version-bump commit), AND that commit
+          # has a multi-line body (>= 3 non-empty lines). Anything else falls
+          # through and the auto-categorized output above stands.
+          if [ -n "$PREVIOUS_TAG" ]; then
+            CURATED_RANGE="${PREVIOUS_TAG}..HEAD~1"
+          else
+            CURATED_RANGE="HEAD~1"
+          fi
+          CANDIDATE_SHAS=$(git log --pretty=format:"%H" --no-merges --grep="\[skip ci\]" --invert-grep "$CURATED_RANGE" 2>/dev/null || true)
+          CANDIDATE_COUNT=$(printf '%s\n' "$CANDIDATE_SHAS" | grep -c . || true)
+
+          if [ "$CANDIDATE_COUNT" = "1" ]; then
+            SQUASH_SHA=$(printf '%s\n' "$CANDIDATE_SHAS" | head -1)
+            BODY_LINES=$(git log -1 --pretty=format:"%b" "$SQUASH_SHA" | grep -c . || true)
+
+            if [ "$BODY_LINES" -ge 3 ]; then
+              echo "Using curated changelog from commit $SQUASH_SHA (body has $BODY_LINES non-empty lines)"
+              {
+                git log -1 --pretty=format:"%s" "$SQUASH_SHA"
+                echo
+                git log -1 --pretty=format:"%b" "$SQUASH_SHA"
+              } > release_notes.md
+            else
+              echo "Single-commit release but body is too short ($BODY_LINES lines) — keeping auto-categorized notes"
+            fi
+          else
+            echo "Found $CANDIDATE_COUNT commits in range — keeping auto-categorized notes"
+          fi
+
+          # Append the GitHub-rendered "Full Changelog" hyperlink so the release
+          # page shows a one-click compare view between the previous release and
+          # this one (matches Sonarr's release format). GitHub auto-detects the
+          # https://github.com/.../compare/<base>...<head> URL and renders it as
+          # a clickable link in the release body.
+          REPO_URL="https://github.com/${{ github.repository }}"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            COMPARE_URL="${REPO_URL}/compare/${PREVIOUS_TAG}...${VERSION}"
+          else
+            # First release ever — no previous tag to diff against. Link to the
+            # tag's own commit list so the release page still has a "see all
+            # commits" jump-off.
+            COMPARE_URL="${REPO_URL}/commits/${VERSION}"
+          fi
+
+          echo "" >> release_notes.md
+          echo "**Full Changelog**: ${COMPARE_URL}" >> release_notes.md
+
+          # Surface the compare URL as a step output so downstream steps
+          # (notably the Discord notification) can build their own clickable
+          # link to the same compare view without recomputing the tag math.
+          echo "compare_url=${COMPARE_URL}" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
 
           echo "Generated release notes:"
           cat release_notes.md
@@ -372,6 +443,29 @@ jobs:
         env:
           BUILDX_NO_DEFAULT_ATTESTATIONS: 1
 
+      # Scan the freshly-published image for HIGH/CRITICAL CVEs and post the
+      # results to the Security tab. Non-blocking: a CVE finding doesn't fail
+      # the release, but it's recorded so we get notified the same way Eric
+      # would notice with Grype, before users do. Dependabot covers ongoing
+      # monitoring; this catches things at release time.
+      - name: Scan published image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        if: success()
+        with:
+          image-ref: sportarr/sportarr:${{ steps.bump_version.outputs.version_number }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Upload Trivy results to GitHub Security tab
+        if: success()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image-${{ steps.bump_version.outputs.base_version }}
+
       - name: Send Discord notification
         if: success()
         env:
@@ -379,20 +473,40 @@ jobs:
           VERSION: ${{ steps.bump_version.outputs.version }}
           BASE_VERSION: ${{ steps.bump_version.outputs.base_version }}
           RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.bump_version.outputs.version }}
+          COMPARE_URL: ${{ steps.changelog.outputs.compare_url }}
+          PREVIOUS_TAG: ${{ steps.changelog.outputs.previous_tag }}
         run: |
           VERSION_NUMBER="${{ steps.bump_version.outputs.version_number }}"
-          # Format release notes for Discord embed (use jq for safe JSON construction)
+          # Format release notes for Discord embed (use jq for safe JSON construction).
+          # The Full Changelog line at the bottom of release_notes.md is dropped here
+          # because we render it as its own labeled section below for cleaner Discord
+          # formatting (a markdown link instead of an inline URL).
           RELEASE_SUMMARY=$(python3 -c "
           lines = open('release_notes.md').read().strip().split('\n')
           out = []
           for line in lines:
+            if line.startswith('**Full Changelog**'):
+              continue  # rendered separately below as a markdown link
             if line.startswith('### '):
               out.append('**' + line[4:] + '**')
             elif line.strip():
               out.append(line)
           print('\n'.join(out[:20]))
           ")
+
+          # Build the compare-link section. Wording differs slightly between the
+          # normal case (compare diff) and the bootstrap case (no previous tag).
+          if [ -n "$PREVIOUS_TAG" ]; then
+            CHANGELOG_SECTION="**Compare Changes**
+          [\`${PREVIOUS_TAG}\` → \`${VERSION}\`](${COMPARE_URL})"
+          else
+            CHANGELOG_SECTION="**Compare Changes**
+          [View all commits](${COMPARE_URL})"
+          fi
+
           DESCRIPTION="${RELEASE_SUMMARY}
+
+          ${CHANGELOG_SECTION}
 
           **Docker Installation**
           \`\`\`

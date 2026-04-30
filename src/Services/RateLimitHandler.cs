@@ -5,15 +5,15 @@ namespace Sportarr.Api.Services;
 /// This is the key difference from the previous implementation - rate limiting
 /// happens PER REQUEST at the transport layer, not in the application logic.
 ///
-/// This creates natural request distribution like Sonarr/Radarr instead of
-/// predictable patterns that trigger bot detection.
+/// This creates natural request distribution instead of predictable patterns
+/// that trigger bot detection.
 /// </summary>
 public class RateLimitHandler : DelegatingHandler
 {
     private readonly IRateLimitService _rateLimitService;
     private readonly ILogger<RateLimitHandler> _logger;
 
-    // Default rate limit: 2 seconds between requests to same indexer (matches Sonarr)
+    // Default rate limit: 2 seconds between requests to the same indexer.
     public static readonly TimeSpan DefaultRateLimit = TimeSpan.FromSeconds(2);
 
     public RateLimitHandler(IRateLimitService rateLimitService, ILogger<RateLimitHandler> logger)

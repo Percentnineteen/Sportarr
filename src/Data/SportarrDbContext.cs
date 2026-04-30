@@ -30,6 +30,7 @@ public class SportarrDbContext : DbContext
     public DbSet<DownloadQueueItem> DownloadQueue => Set<DownloadQueueItem>();
     public DbSet<BlocklistItem> Blocklist => Set<BlocklistItem>();
     public DbSet<PendingImport> PendingImports => Set<PendingImport>();
+    public DbSet<PendingRelease> PendingReleases => Set<PendingRelease>();
     public DbSet<Indexer> Indexers => Set<Indexer>();
     public DbSet<IndexerStatus> IndexerStatuses => Set<IndexerStatus>();
     public DbSet<AppTask> Tasks => Set<AppTask>();
@@ -62,7 +63,7 @@ public class SportarrDbContext : DbContext
     // Submitted mapping requests (tracks requests sent to Sportarr-API for status checking)
     public DbSet<SubmittedMappingRequest> SubmittedMappingRequests => Set<SubmittedMappingRequest>();
 
-    // Import list exclusions (for Maintainerr/Sonarr API compatibility)
+    // Import list exclusions (for Maintainerr API compatibility)
     public DbSet<ImportListExclusion> ImportListExclusions => Set<ImportListExclusion>();
 
     // Followed teams (for cross-league team monitoring)
@@ -754,7 +755,7 @@ public class SportarrDbContext : DbContext
             entity.HasIndex(s => s.ExpiresAt);
         });
 
-        // User configuration (matches Sonarr/Radarr)
+        // User configuration
         modelBuilder.Entity<User>(entity =>
         {
             entity.HasKey(u => u.Id);
@@ -865,8 +866,8 @@ public class SportarrDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
-        // IndexerStatus configuration (Sonarr-style health and rate limiting)
-        // Enhanced with separate query/grab backoffs (Sonarr #3132 pattern)
+        // IndexerStatus configuration: health and rate limiting,
+        // with separate query/grab backoffs.
         modelBuilder.Entity<IndexerStatus>(entity =>
         {
             entity.HasKey(s => s.Id);
@@ -936,7 +937,7 @@ public class SportarrDbContext : DbContext
                 (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
                 c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
                 c => c.ToList()));
-            // Set EventId to null when Event is deleted (keeps history like Sonarr)
+            // Set EventId to null when Event is deleted (preserves history rows)
             entity.HasOne(h => h.Event)
                   .WithMany()
                   .HasForeignKey(h => h.EventId)
@@ -1203,7 +1204,7 @@ public class SportarrDbContext : DbContext
         });
 
         // ============================================================================
-        // IMPORT LIST EXCLUSION Configuration (for Maintainerr/Sonarr API compatibility)
+        // IMPORT LIST EXCLUSION Configuration (for Maintainerr API compatibility)
         // ============================================================================
 
         modelBuilder.Entity<ImportListExclusion>(entity =>
