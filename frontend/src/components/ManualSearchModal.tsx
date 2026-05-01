@@ -1044,8 +1044,14 @@ export default function ManualSearchModal({
                       </div>
                     )}
 
-                    {/* Content - Table Layout */}
-                    <div className="max-h-[65vh] overflow-y-auto overflow-x-hidden">
+                    {/* Content - Table Layout. The 11-column release table
+                        sums to ~900 px and never fits on a phone-width
+                        viewport, so overflow-x-auto lets the user scroll
+                        sideways to reach Quality / CF / Rejections /
+                        Actions. Title and Source remain on the left edge
+                        when the user scrolls right, which is enough
+                        anchor information to stay oriented. */}
+                    <div className="max-h-[65vh] overflow-auto">
                       {isSearching ? (
                         <div className="p-8 text-center">
                           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>

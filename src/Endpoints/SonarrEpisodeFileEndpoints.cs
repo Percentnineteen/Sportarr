@@ -15,7 +15,7 @@ public static class SonarrEpisodeFileEndpoints
         // GET /api/v3/episodefile - Get episode files (Sonarr v3 API for Decypharr repair)
         app.MapGet("/api/v3/episodefile", async (SportarrDbContext db, ILogger<Program> logger, int? seriesId) =>
         {
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/episodefile - seriesId={SeriesId}", seriesId);
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/episodefile - seriesId={SeriesId}", seriesId);
 
             if (!seriesId.HasValue)
             {
@@ -79,7 +79,7 @@ public static class SonarrEpisodeFileEndpoints
         // GET /api/v3/episodefile/{id} - Get specific episode file by ID
         app.MapGet("/api/v3/episodefile/{id:int}", async (int id, SportarrDbContext db, ILogger<Program> logger) =>
         {
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/episodefile/{Id}", id);
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/episodefile/{Id}", id);
 
             var eventFile = await db.EventFiles
                 .Include(ef => ef.Event)
@@ -258,7 +258,7 @@ public static class SonarrEpisodeFileEndpoints
         // GET /api/v3/episode - Get episodes (Sonarr v3 API for Decypharr repair)
         app.MapGet("/api/v3/episode", async (SportarrDbContext db, ILogger<Program> logger, int? seriesId, int? seasonNumber) =>
         {
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/episode - seriesId={SeriesId}, seasonNumber={SeasonNumber}",
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/episode - seriesId={SeriesId}, seasonNumber={SeasonNumber}",
                 seriesId, seasonNumber);
 
             if (!seriesId.HasValue)
@@ -329,7 +329,7 @@ public static class SonarrEpisodeFileEndpoints
         // GET /api/v3/episode/{id} - Get specific episode by ID
         app.MapGet("/api/v3/episode/{id:int}", async (int id, SportarrDbContext db, ILogger<Program> logger) =>
         {
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/episode/{Id}", id);
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/episode/{Id}", id);
 
             var eventItem = await db.Events
                 .Include(e => e.Files)

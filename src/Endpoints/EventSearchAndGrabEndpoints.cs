@@ -22,7 +22,7 @@ app.MapGet("/api/events/tv-schedule", async (
     SportarrApiClient sportsDbClient,
     ILogger<Program> logger) =>
 {
-    logger.LogInformation("[EVENTS TV-SCHEDULE] GET /api/events/tv-schedule?date={Date}&sport={Sport}", date, sport);
+    logger.LogDebug("[EVENTS TV-SCHEDULE] GET /api/events/tv-schedule?date={Date}&sport={Sport}", date, sport);
 
     if (string.IsNullOrEmpty(date))
     {
@@ -44,7 +44,7 @@ app.MapGet("/api/events/tv-schedule", async (
             results = await sportsDbClient.GetTVScheduleByDateAsync(date);
         }
 
-        logger.LogInformation("[EVENTS TV-SCHEDULE] Found {Count} events", results?.Count ?? 0);
+        logger.LogDebug("[EVENTS TV-SCHEDULE] Found {Count} events", results?.Count ?? 0);
         return Results.Ok(results ?? new List<TVSchedule>());
     }
     catch (Exception ex)
@@ -61,7 +61,7 @@ app.MapGet("/api/events/livescore", async (
     SportarrApiClient sportsDbClient,
     ILogger<Program> logger) =>
 {
-    logger.LogInformation("[EVENTS LIVESCORE] GET /api/events/livescore?sport={Sport}", sport);
+    logger.LogDebug("[EVENTS LIVESCORE] GET /api/events/livescore?sport={Sport}", sport);
 
     if (string.IsNullOrEmpty(sport))
     {
@@ -71,7 +71,7 @@ app.MapGet("/api/events/livescore", async (
     try
     {
         var results = await sportsDbClient.GetLivescoreBySportAsync(sport);
-        logger.LogInformation("[EVENTS LIVESCORE] Found {Count} events", results?.Count ?? 0);
+        logger.LogDebug("[EVENTS LIVESCORE] Found {Count} events", results?.Count ?? 0);
         return Results.Ok(results ?? new List<Event>());
     }
     catch (Exception ex)

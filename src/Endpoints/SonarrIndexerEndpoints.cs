@@ -332,7 +332,7 @@ app.MapGet("/api/v3/indexer/schema", (ILogger<Program> logger) =>
 // GET /api/v3/indexer - List all indexers (Sonarr v3 API for Prowlarr)
 app.MapGet("/api/v3/indexer", async (SportarrDbContext db, ILogger<Program> logger) =>
 {
-    logger.LogInformation("[PROWLARR] GET /api/v3/indexer - Prowlarr requesting indexer list");
+    logger.LogDebug("[PROWLARR] GET /api/v3/indexer - Prowlarr requesting indexer list");
 
     var indexers = await db.Indexers.ToListAsync();
 
@@ -414,7 +414,7 @@ app.MapGet("/api/v3/indexer", async (SportarrDbContext db, ILogger<Program> logg
 // GET /api/v3/indexer/{id} - Get specific indexer (Sonarr v3 API for Prowlarr)
 app.MapGet("/api/v3/indexer/{id:int}", async (int id, SportarrDbContext db, ILogger<Program> logger) =>
 {
-    logger.LogInformation("[PROWLARR] GET /api/v3/indexer/{Id}", id);
+    logger.LogDebug("[PROWLARR] GET /api/v3/indexer/{Id}", id);
 
     var indexer = await db.Indexers.FindAsync(id);
     if (indexer == null)

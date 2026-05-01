@@ -115,7 +115,7 @@ public class ReleaseMatchingService
             result.Confidence = 0;
             result.IsHardRejection = true;
             result.Rejections.Add($"Non-event content detected: {nonEventContent}");
-            _logger.LogInformation("[Release Matching] Hard rejection: non-event content '{ContentType}' detected in '{Release}'",
+            _logger.LogDebug("[Release Matching] Hard rejection: non-event content '{ContentType}' detected in '{Release}'",
                 nonEventContent, release.Title);
             return result;
         }
@@ -357,9 +357,16 @@ public class ReleaseMatchingService
         }
         else
         {
-            // No date/year found in release - this is concerning for team sports with dated filenames
-            // Log at warning level to help diagnose parsing issues
-            _logger.LogWarning("[Release Matching] No date/year extracted from release: '{Release}' - date validation skipped",
+            // No date/year found in release. This is concerning for team sports
+            // with dated filenames, but the matcher is called per (release ×
+            // event) pair — emitting a warning here means a single
+            // un-parseable release name shows up once per monitored event,
+            // which on a backlogged setup with thousands of monitored events
+            // floods the log file with N copies of the same warning. Log at
+            // Debug instead so per-comparison output stays out of Info, and
+            // rely on `[SportsFileNameParser]` warnings (which fire once per
+            // parse, not once per match) to surface genuinely malformed input.
+            _logger.LogDebug("[Release Matching] No date/year extracted from release: '{Release}' - date validation skipped",
                 release.Title);
         }
 
@@ -462,7 +469,7 @@ public class ReleaseMatchingService
             result.Confidence -= 100;
             result.IsHardRejection = true;
             result.Rejections.Add($"Different sport detected in release: {differentSport}");
-            _logger.LogInformation("[Release Matching] Hard rejection: different sport '{Sport}' detected in '{Release}' for event '{Event}'",
+            _logger.LogDebug("[Release Matching] Hard rejection: different sport '{Sport}' detected in '{Release}' for event '{Event}'",
                 differentSport, release.Title, evt.Title);
             return result;
         }
@@ -632,7 +639,14 @@ public class ReleaseMatchingService
                          result.MatchReasons.Count > 0 &&
                          !result.IsHardRejection;
 
-        _logger.LogInformation("[Release Matching] '{Release}' -> Event '{Event}': Confidence {Confidence}%, Match: {IsMatch}, Reasons: [{Reasons}], Rejections: [{Rejections}]",
+        // Per-comparison summary fires once per (release × event) — on a
+        // backlogged setup that is N×M lines per RSS sync. Demoted to Debug
+        // because it's diagnostic detail, not a meaningful state change.
+        // Production users have hung containers when this was logged at Info
+        // (50MB/min of log spam, file rotator can't keep up, eventual
+        // deadlock). The per-grab summary upstream still logs which release
+        // ultimately won at Info, which is the actually-meaningful event.
+        _logger.LogDebug("[Release Matching] '{Release}' -> Event '{Event}': Confidence {Confidence}%, Match: {IsMatch}, Reasons: [{Reasons}], Rejections: [{Rejections}]",
             release.Title, evt.Title, result.Confidence, result.IsMatch,
             string.Join(", ", result.MatchReasons),
             string.Join(", ", result.Rejections));

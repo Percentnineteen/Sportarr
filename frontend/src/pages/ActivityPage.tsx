@@ -320,8 +320,12 @@ export default function ActivityPage() {
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const scrollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Multi-select state for queue items
+  // Multi-select state for queue items and pending imports. Tracked as two
+  // separate sets keyed by numeric id, plus a shared last-selected anchor key
+  // (kind + id) used to drive shift-click range selection across both kinds.
   const [selectedQueueIds, setSelectedQueueIds] = useState<Set<number>>(new Set());
+  const [selectedPendingIds, setSelectedPendingIds] = useState<Set<number>>(new Set());
+  const [lastSelectedKey, setLastSelectedKey] = useState<string | null>(null);
 
   const compactView = useCompactView();
 
@@ -566,7 +570,10 @@ export default function ActivityPage() {
     setBlocklistAction('none'); // Reset to default
   };
 
-  // Open remove dialog for multiple selected items
+  // Open remove dialog for multiple selected items. Pending imports run on a
+  // separate code path (no blocklist routing, no per-client removal options),
+  // so they're handled in a Promise.all alongside the dialog confirmation
+  // rather than rolled into the queue-removal dialog UI.
   const handleOpenBulkRemoveDialog = () => {
     const selectedItems = queueRows
       .filter(item => selectedQueueIds.has(item.id))
@@ -577,7 +584,26 @@ export default function ActivityPage() {
         downloadClient: item.downloadClient
       }));
 
-    if (selectedItems.length === 0) return;
+    const selectedPendings = pendingImports.filter(p => selectedPendingIds.has(p.id));
+
+    if (selectedItems.length === 0 && selectedPendings.length === 0) return;
+
+    if (selectedItems.length === 0) {
+      // Pending imports only: skip the blocklist/removal-method dialog and
+      // remove straight away. Each pending import endpoint handles its own
+      // client-side removal; we run them in parallel and refresh once.
+      Promise.all(
+        selectedPendings.map(p =>
+          apiClient.post(`/pending-imports/${p.id}/remove-from-client`).catch(err => {
+            console.error('Failed to remove pending import:', err);
+          })
+        )
+      ).then(() => {
+        clearRowSelections();
+        loadQueue();
+      });
+      return;
+    }
 
     setRemoveQueueDialog({
       type: 'queue',
@@ -585,6 +611,30 @@ export default function ActivityPage() {
     });
     setRemovalMethod('removeFromClient'); // Reset to default
     setBlocklistAction('none'); // Reset to default
+  };
+
+  // Bulk Import: walk the selection and call the appropriate per-item import
+  // endpoint (force-import for unmonitored rows, retry-import for failed-but-
+  // downloaded rows). Disabled when the selection contains pending imports
+  // or queue rows whose status doesn't expose an Import action.
+  const handleBulkImport = async () => {
+    if (!canBulkImport) return;
+    const items = selectedQueueItems;
+    try {
+      await Promise.all(items.map(async item => {
+        const isUnmonitored = item.statusMessages?.some(msg => msg.includes('no longer monitored')) ?? false;
+        const canImport = isUnmonitored && (item.status === 5 || item.status === 3);
+        if (canImport) {
+          await apiClient.post(`/queue/${item.id}/import`);
+        } else {
+          await apiClient.post(`/queue/${item.id}/retry`);
+        }
+      }));
+      clearRowSelections();
+      loadQueue();
+    } catch (error) {
+      console.error('Bulk import failed:', error);
+    }
   };
 
   const handleRemoveQueue = async () => {
@@ -602,8 +652,19 @@ export default function ActivityPage() {
           })
         )
       );
+      // After confirming the queue-row removal dialog, also fan out to any
+      // pending imports the user picked in the same selection — the dialog
+      // doesn't display them but they were part of the bulk action.
+      const pendingsToRemove = pendingImports.filter(p => selectedPendingIds.has(p.id));
+      if (pendingsToRemove.length > 0) {
+        await Promise.all(pendingsToRemove.map(p =>
+          apiClient.post(`/pending-imports/${p.id}/remove-from-client`).catch(err => {
+            console.error('Failed to remove pending import:', err);
+          })
+        ));
+      }
       setRemoveQueueDialog(null);
-      setSelectedQueueIds(new Set()); // Clear selection after bulk delete
+      clearRowSelections();
       loadQueue();
     } catch (error) {
       console.error('Failed to remove queue item(s):', error);
@@ -737,6 +798,26 @@ export default function ActivityPage() {
     localStorage.setItem('queuePageSize', size.toString());
   };
 
+  // Per-column width weights for the compact table's table-fixed layout.
+  // Numbers are relative — the browser normalizes them so the visible
+  // subset always fills 100% of the container, regardless of which
+  // columns the user has enabled in View Options. Title / Event get more
+  // weight because they show long text; badge / numeric columns get less.
+  const COLUMN_WIDTH_WEIGHTS: Record<keyof ColumnVisibility, number> = {
+    event: 14,
+    title: 18,
+    quality: 6,
+    protocol: 7,
+    indexer: 8,
+    status: 9,
+    progress: 7,
+    size: 7,
+    timeLeft: 6,
+    client: 9,
+    added: 7,
+    actions: 7,
+  };
+
   const toggleShowUnknownEvents = () => {
     const newValue = !showUnknownEvents;
     setShowUnknownEvents(newValue);
@@ -768,10 +849,13 @@ export default function ActivityPage() {
     setDraggedColumn(null);
   };
 
-  // Filter by showUnknownEvents setting, then sort by the user's chosen field.
-  // The Added DESC default matches what the API returns, so users who never
-  // touch the sort controls see the same ordering as before.
-  const queueRows = (showUnknownEvents
+  // Filter by showUnknownEvents setting, then sort by the user's chosen field,
+  // then truncate to the user-configured pageSize. Without the slice, the
+  // pageSize input on the View Options modal had no effect and a large queue
+  // (1k+ rows) would render every item on a single page. The Added DESC
+  // default matches what the API returns, so users who never touch the sort
+  // controls see the same ordering as before.
+  const queueRowsAll = (showUnknownEvents
     ? queueItems
     : queueItems.filter(item => item.event && item.event.id)
   ).slice().sort((a, b) => {
@@ -797,31 +881,150 @@ export default function ActivityPage() {
     }
   });
 
-  // Selection helpers for multi-select
-  const toggleSelectQueueItem = (id: number) => {
-    setSelectedQueueIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
+  // Pending imports follow the same sort the queue uses so clicking a
+  // column header reorders both lists consistently. Field mapping mirrors
+  // the queue comparator: pending imports don't have a queue status enum
+  // or a progress percentage, so those fields fall back to sentinel
+  // values that still produce a stable order under the same sort.
+  const pendingImportsSorted = pendingImports.slice().sort((a, b) => {
+    const dir = queueSortDirection === 'asc' ? 1 : -1;
+    const cmpStr = (x: string | undefined, y: string | undefined) =>
+      ((x ?? '').toLowerCase()).localeCompare((y ?? '').toLowerCase());
+    const cmpNum = (x: number | undefined, y: number | undefined) =>
+      (x ?? 0) - (y ?? 0);
+
+    switch (queueSortField) {
+      case 'event':    return dir * cmpStr(a.suggestedEvent?.title, b.suggestedEvent?.title);
+      case 'title':    return dir * cmpStr(a.title, b.title);
+      case 'quality':  return dir * cmpStr(a.quality, b.quality);
+      case 'status':   return 0;
+      case 'progress': return 0;
+      case 'size':     return dir * cmpNum(a.size, b.size);
+      case 'client':   return dir * cmpStr(a.downloadClient?.name, b.downloadClient?.name);
+      case 'added':    return dir * (new Date(a.detected || 0).getTime() - new Date(b.detected || 0).getTime());
+      default:         return 0;
+    }
+  });
+
+  // Page size budgets BOTH pending imports and queue rows. Pending imports
+  // get first dibs because they're more actionable (require user mapping)
+  // and typically few; whatever budget remains goes to queue rows. Without
+  // this, "Page Size 200" with 95 pending imports rendered 295 rows total
+  // and the bulk-select count silently exceeded the page size.
+  const visiblePendingImports = pendingImportsSorted.slice(0, pageSize);
+  const queueRowBudget = Math.max(0, pageSize - visiblePendingImports.length);
+  const queueRows = queueRowsAll.slice(0, queueRowBudget);
+  const totalAvailable = pendingImports.length + queueRowsAll.length;
+  const totalVisible = visiblePendingImports.length + queueRows.length;
+  const totalHidden = totalAvailable - totalVisible;
+
+  // Combined render-order list of selectable rows. Pending imports render
+  // above regular queue rows in both compact and spacious views, so order
+  // here mirrors that. The keys ('p-' / 'q-' prefix + numeric id) drive
+  // shift-click range selection and select-all across both kinds.
+  const selectableRowKeys: string[] = [
+    ...visiblePendingImports.map(p => `p-${p.id}`),
+    ...queueRows.map(q => `q-${q.id}`),
+  ];
+
+  const totalSelected = selectedQueueIds.size + selectedPendingIds.size;
+  const totalSelectable = selectableRowKeys.length;
+
+  // Toggle a single row, with optional shift-click semantics: when shift is
+  // held and there's a previous anchor row, every row between the anchor and
+  // the click target is forced into the same state as the click target.
+  const toggleSelectRow = (kind: 'q' | 'p', id: number, withShift: boolean) => {
+    const key = `${kind}-${id}`;
+    const currentlySelected = kind === 'q' ? selectedQueueIds.has(id) : selectedPendingIds.has(id);
+    const nextSelected = !currentlySelected;
+
+    if (withShift && lastSelectedKey && lastSelectedKey !== key) {
+      const anchor = selectableRowKeys.indexOf(lastSelectedKey);
+      const target = selectableRowKeys.indexOf(key);
+      if (anchor !== -1 && target !== -1) {
+        const [lo, hi] = anchor < target ? [anchor, target] : [target, anchor];
+        const rangeKeys = selectableRowKeys.slice(lo, hi + 1);
+        setSelectedQueueIds(prev => {
+          const next = new Set(prev);
+          rangeKeys.filter(k => k.startsWith('q-')).forEach(k => {
+            const rid = parseInt(k.slice(2));
+            if (nextSelected) next.add(rid); else next.delete(rid);
+          });
+          return next;
+        });
+        setSelectedPendingIds(prev => {
+          const next = new Set(prev);
+          rangeKeys.filter(k => k.startsWith('p-')).forEach(k => {
+            const rid = parseInt(k.slice(2));
+            if (nextSelected) next.add(rid); else next.delete(rid);
+          });
+          return next;
+        });
+        setLastSelectedKey(key);
+        return;
       }
-      return next;
-    });
+    }
+
+    if (kind === 'q') {
+      setSelectedQueueIds(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+      });
+    } else {
+      setSelectedPendingIds(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+      });
+    }
+    setLastSelectedKey(key);
   };
 
   const toggleSelectAllQueue = () => {
-    if (selectedQueueIds.size === queueRows.length) {
-      // All selected, deselect all
+    if (totalSelected === totalSelectable && totalSelectable > 0) {
       setSelectedQueueIds(new Set());
+      setSelectedPendingIds(new Set());
     } else {
-      // Select all
       setSelectedQueueIds(new Set(queueRows.map(item => item.id)));
+      setSelectedPendingIds(new Set(visiblePendingImports.map(p => p.id)));
     }
   };
 
-  const isAllQueueSelected = queueRows.length > 0 && selectedQueueIds.size === queueRows.length;
-  const isSomeQueueSelected = selectedQueueIds.size > 0 && selectedQueueIds.size < queueRows.length;
+  const clearRowSelections = () => {
+    setSelectedQueueIds(new Set());
+    setSelectedPendingIds(new Set());
+    setLastSelectedKey(null);
+  };
+
+  const isAllQueueSelected = totalSelectable > 0 && totalSelected === totalSelectable;
+  const isSomeQueueSelected = totalSelected > 0 && totalSelected < totalSelectable;
+
+  // Bulk Import is only valid for queue items where a per-item Import action
+  // is already exposed (force-import on unmonitored Warning/Completed rows
+  // and retry-import on failed-but-downloaded rows). Pending imports require
+  // per-item event mapping via the manual import dialog so they can't ride
+  // along on a bulk import.
+  const isQueueRowImportable = (item: QueueItem): boolean => {
+    const isUnmonitored = item.statusMessages?.some(msg => msg.includes('no longer monitored')) ?? false;
+    const canImport = isUnmonitored && (item.status === 5 || item.status === 3);
+    const canRetryImport = item.status === 4 && item.progress >= 100;
+    return canImport || canRetryImport;
+  };
+
+  const selectedQueueItems = queueRows.filter(item => selectedQueueIds.has(item.id));
+  const canBulkImport =
+    totalSelected > 0 &&
+    selectedPendingIds.size === 0 &&
+    selectedQueueItems.length === selectedQueueIds.size &&
+    selectedQueueItems.every(isQueueRowImportable);
+
+  const bulkImportDisabledReason = (() => {
+    if (totalSelected === 0) return 'Select rows to import';
+    if (selectedPendingIds.size > 0) return 'Pending imports require per-item event mapping; remove them from the selection or open them individually';
+    if (!selectedQueueItems.every(isQueueRowImportable)) return 'One or more selected items are still downloading or already imported';
+    return '';
+  })();
 
   // Column label mapping
   const getColumnLabel = (column: keyof ColumnVisibility): string => {
@@ -847,18 +1050,18 @@ export default function ActivityPage() {
     switch (column) {
       case 'event':
         return (
-          <td key="event" className="px-3 py-1.5 min-w-[150px]">
-            <div className="text-white text-xs font-medium break-words">
+          <td key="event" className="px-3 py-1.5 overflow-hidden">
+            <div className="text-white text-xs font-medium truncate" title={item.event?.title || 'Unknown Event'}>
               {item.event?.title || 'Unknown Event'}
               {item.part && <span className="text-blue-400 ml-1">({item.part})</span>}
             </div>
-            <div className="text-xs text-gray-400 break-words">{item.event?.organization}</div>
+            <div className="text-xs text-gray-400 truncate" title={item.event?.organization}>{item.event?.organization}</div>
           </td>
         );
       case 'title':
         return (
-          <td key="title" className="px-3 py-1.5 min-w-[200px]">
-            <div className="text-gray-300 text-xs break-words">{item.title}</div>
+          <td key="title" className="px-3 py-1.5 overflow-hidden">
+            <div className="text-gray-300 text-xs truncate" title={item.title}>{item.title}</div>
           </td>
         );
       case 'quality':
@@ -875,8 +1078,8 @@ export default function ActivityPage() {
         );
       case 'indexer':
         return (
-          <td key="indexer" className="px-2 py-1.5 text-center">
-            <span className="text-gray-400 text-xs">{item.indexer || 'Unknown'}</span>
+          <td key="indexer" className="px-2 py-1.5 text-center overflow-hidden">
+            <div className="text-gray-400 text-xs truncate" title={item.indexer || 'Unknown'}>{item.indexer || 'Unknown'}</div>
           </td>
         );
       case 'status':
@@ -898,42 +1101,42 @@ export default function ActivityPage() {
         );
       case 'progress':
         return (
-          <td key="progress" className="px-2 py-1.5">
-            <div className="flex items-center gap-1.5 w-24">
-              <div className="flex-1 bg-gray-700 rounded-full h-1.5">
+          <td key="progress" className="px-2 py-1.5 overflow-hidden">
+            <div className="flex items-center gap-1.5 w-full">
+              <div className="flex-1 bg-gray-700 rounded-full h-1.5 min-w-0">
                 <div
                   className="bg-red-600 h-1.5 rounded-full transition-all"
                   style={{ width: `${item.progress}%` }}
                 />
               </div>
-              <span className="text-xs text-gray-400 w-8 text-right flex-shrink-0">{item.progress.toFixed(0)}%</span>
+              <span className="text-xs text-gray-400 text-right flex-shrink-0">{item.progress.toFixed(0)}%</span>
             </div>
           </td>
         );
       case 'size':
         return (
-          <td key="size" className="px-2 py-1.5 text-center">
-            <div className="text-gray-300 text-xs whitespace-nowrap">
+          <td key="size" className="px-2 py-1.5 text-center overflow-hidden">
+            <div className="text-gray-300 text-xs truncate" title={`${formatBytes(item.downloaded)} / ${formatBytes(item.size)}`}>
               {formatBytes(item.downloaded)} / {formatBytes(item.size)}
             </div>
           </td>
         );
       case 'timeLeft':
         return (
-          <td key="timeLeft" className="px-2 py-1.5 text-center">
-            <span className="text-gray-400 text-xs">{isMeaningfulTimeRemaining(item.timeRemaining) ? item.timeRemaining : '—'}</span>
+          <td key="timeLeft" className="px-2 py-1.5 text-center overflow-hidden">
+            <div className="text-gray-400 text-xs truncate">{isMeaningfulTimeRemaining(item.timeRemaining) ? item.timeRemaining : '—'}</div>
           </td>
         );
       case 'client':
         return (
-          <td key="client" className="px-2 py-1.5 text-center">
-            <span className="text-gray-400 text-xs">{item.downloadClient?.name || 'Unknown'}</span>
+          <td key="client" className="px-2 py-1.5 text-center overflow-hidden">
+            <div className="text-gray-400 text-xs truncate" title={item.downloadClient?.name || 'Unknown'}>{item.downloadClient?.name || 'Unknown'}</div>
           </td>
         );
       case 'added':
         return (
-          <td key="added" className="px-2 py-1.5 text-center">
-            <span className="text-gray-400 text-xs">{formatDate(item.added)}</span>
+          <td key="added" className="px-2 py-1.5 text-center overflow-hidden">
+            <div className="text-gray-400 text-xs truncate" title={formatDate(item.added)}>{formatDate(item.added)}</div>
           </td>
         );
       case 'actions':
@@ -1083,17 +1286,30 @@ export default function ActivityPage() {
             ) : (
               <>
               {/* Bulk Action Bar - Shows when items are selected */}
-              {selectedQueueIds.size > 0 && (
+              {totalSelected > 0 && (
                 <div className="px-4 py-3 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
                   <span className="text-gray-300 text-sm">
-                    {selectedQueueIds.size} item{selectedQueueIds.size !== 1 ? 's' : ''} selected
+                    {totalSelected} item{totalSelected !== 1 ? 's' : ''} selected
                   </span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setSelectedQueueIds(new Set())}
+                      onClick={clearRowSelections}
                       className="px-3 py-1.5 text-gray-400 hover:text-white text-sm transition-colors"
                     >
                       Clear Selection
+                    </button>
+                    <button
+                      onClick={handleBulkImport}
+                      disabled={!canBulkImport}
+                      title={canBulkImport ? 'Import selected items' : bulkImportDisabledReason}
+                      className={`px-4 py-1.5 text-white text-sm rounded transition-colors flex items-center gap-2 ${
+                        canBulkImport
+                          ? 'bg-green-600 hover:bg-green-700'
+                          : 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                      }`}
+                    >
+                      <DocumentCheckIcon className="w-4 h-4" />
+                      Import Selected
                     </button>
                     <button
                       onClick={handleOpenBulkRemoveDialog}
@@ -1106,8 +1322,20 @@ export default function ActivityPage() {
                 </div>
               )}
               {compactView ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
+                <div>
+                  {/* table-fixed + a colgroup of weighted widths means the
+                      table always fills 100% of the available horizontal
+                      space without overflowing the viewport. Cells truncate
+                      with ellipses inside their assigned column width
+                      instead of forcing a horizontal scrollbar. */}
+                  <table className="w-full table-fixed">
+                    <colgroup>
+                      <col style={{ width: '40px' }} />
+                      {columnOrder.map(column => {
+                        if (!columnVisibility[column]) return null;
+                        return <col key={column} style={{ width: `${COLUMN_WIDTH_WEIGHTS[column]}%` }} />;
+                      })}
+                    </colgroup>
                     <thead>
                       <tr className="bg-gray-800 text-gray-300 text-xs">
                         {/* Select All Checkbox */}
@@ -1163,41 +1391,53 @@ export default function ActivityPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-700">
                       {/* Pending Imports - External downloads needing manual mapping */}
-                      {pendingImports.map((pendingImport) => (
+                      {visiblePendingImports.map((pendingImport) => (
                         <tr
                           key={`pending-${pendingImport.id}`}
-                          className={`${pendingImport.isPack ? 'bg-purple-900/10 hover:bg-purple-900/20 border-l-4 border-purple-500' : 'bg-yellow-900/10 hover:bg-yellow-900/20 border-l-4 border-yellow-500'} transition-colors`}
+                          className={`${pendingImport.isPack ? 'bg-purple-900/10 hover:bg-purple-900/20 border-l-4 border-purple-500' : 'bg-yellow-900/10 hover:bg-yellow-900/20 border-l-4 border-yellow-500'} transition-colors ${selectedPendingIds.has(pendingImport.id) ? 'ring-1 ring-red-600' : ''}`}
                         >
-                          {/* Empty checkbox cell */}
-                          <td className="px-3 py-1.5 w-10" />
+                          <td className="px-3 py-1.5 w-10">
+                            <input
+                              type="checkbox"
+                              checked={selectedPendingIds.has(pendingImport.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelectRow('p', pendingImport.id, e.shiftKey);
+                              }}
+                              onChange={() => { /* handled by onClick to read shiftKey */ }}
+                              className="w-4 h-4 bg-gray-700 border-gray-600 rounded text-red-600 focus:ring-red-600 focus:ring-2 cursor-pointer"
+                            />
+                          </td>
                           {columnOrder.map(column => {
                             if (!columnVisibility[column]) return null;
                             switch (column) {
                               case 'event':
                                 return (
-                                  <td key="event" className="px-3 py-1.5 min-w-[150px]">
-                                    <div className="text-white text-xs font-medium break-words flex items-center gap-1.5">
+                                  <td key="event" className="px-3 py-1.5 overflow-hidden">
+                                    <div className="text-white text-xs font-medium flex items-center gap-1.5 min-w-0">
                                       {pendingImport.isPack && (
                                         <span className="px-1.5 py-0.5 bg-purple-600 text-white text-xs rounded-full flex-shrink-0">PACK</span>
                                       )}
-                                      {pendingImport.suggestedEvent?.title
-                                        ? <>
-                                            {pendingImport.suggestedEvent.title}
-                                            {!pendingImport.isPack && <span className="text-gray-500 font-normal ml-1">({pendingImport.suggestionConfidence}%)</span>}
-                                            {pendingImport.isPack && <span className="text-gray-500 font-normal ml-1">· {pendingImport.fileCount} files, {pendingImport.matchedEventsCount} matched</span>}
-                                          </>
-                                        : pendingImport.isPack
-                                          ? <span className="text-gray-400">{pendingImport.fileCount} files · {pendingImport.matchedEventsCount} matched</span>
-                                          : <span className="text-gray-500 italic">No match found</span>
-                                      }
+                                      <span className="truncate min-w-0" title={pendingImport.suggestedEvent?.title}>
+                                        {pendingImport.suggestedEvent?.title
+                                          ? <>
+                                              {pendingImport.suggestedEvent.title}
+                                              {!pendingImport.isPack && <span className="text-gray-500 font-normal ml-1">({pendingImport.suggestionConfidence}%)</span>}
+                                              {pendingImport.isPack && <span className="text-gray-500 font-normal ml-1">· {pendingImport.fileCount} files, {pendingImport.matchedEventsCount} matched</span>}
+                                            </>
+                                          : pendingImport.isPack
+                                            ? <span className="text-gray-400">{pendingImport.fileCount} files · {pendingImport.matchedEventsCount} matched</span>
+                                            : <span className="text-gray-500 italic">No match found</span>
+                                        }
+                                      </span>
                                     </div>
                                     <div className="text-xs text-gray-500">Manual Import</div>
                                   </td>
                                 );
                               case 'title':
                                 return (
-                                  <td key="title" className="px-3 py-1.5 min-w-[200px]">
-                                    <div className="text-gray-300 text-xs break-words">{pendingImport.title}</div>
+                                  <td key="title" className="px-3 py-1.5 overflow-hidden">
+                                    <div className="text-gray-300 text-xs truncate" title={pendingImport.title}>{pendingImport.title}</div>
                                   </td>
                                 );
                               case 'quality':
@@ -1325,14 +1565,20 @@ export default function ActivityPage() {
                       {queueRows.map((item) => (
                         <tr
                           key={item.id}
-                          className={`hover:bg-gray-800/50 transition-colors ${selectedQueueIds.has(item.id) ? 'bg-red-900/20' : ''}`}
+                          className={`hover:bg-gray-800/50 transition-colors ${selectedQueueIds.has(item.id) ? 'bg-red-900/20 ring-1 ring-red-600/40' : ''}`}
                         >
-                          {/* Row Checkbox */}
+                          {/* Row Checkbox - shift-click extends selection from
+                              the previous click anchor across both queue rows
+                              and pending imports. */}
                           <td className="px-3 py-1.5 w-10">
                             <input
                               type="checkbox"
                               checked={selectedQueueIds.has(item.id)}
-                              onChange={() => toggleSelectQueueItem(item.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelectRow('q', item.id, e.shiftKey);
+                              }}
+                              onChange={() => { /* handled by onClick to read shiftKey */ }}
                               className="w-4 h-4 bg-gray-700 border-gray-600 rounded text-red-600 focus:ring-red-600 focus:ring-2 cursor-pointer"
                             />
                           </td>
@@ -1347,52 +1593,136 @@ export default function ActivityPage() {
                 </div>
               ) : (
                 /* Spacious: card grid */
-                <div className="space-y-3">
-                  {/* Sort header row — spacious mode has no table, but we
-                     still expose the same clickable column sort the compact
-                     table does so the user can sort regardless of layout.
-                     Filtered by columnVisibility so the View Options modal's
-                     Columns section affects both layouts: hiding a column in
-                     the modal also hides its sort button here. */}
-                  <div className="flex items-center gap-1 text-xs text-gray-400 px-2 py-2 bg-gray-800/40 border border-gray-700/50 rounded-lg">
-                    <span className="font-medium mr-1">Sort:</span>
-                    {columnOrder.map(column => {
-                      if (!columnVisibility[column]) return null;
-                      const sortFieldForColumn: Partial<Record<keyof ColumnVisibility, QueueSortField>> = {
-                        event: 'event', title: 'title', quality: 'quality',
-                        status: 'status', progress: 'progress', size: 'size',
-                        client: 'client', added: 'added',
-                      };
-                      const sortField = sortFieldForColumn[column];
-                      if (!sortField) return null;
-                      const isSorted = sortField === queueSortField;
-                      const SortIcon = isSorted
-                        ? (queueSortDirection === 'asc' ? ChevronUpIcon : ChevronDownIcon)
-                        : ChevronUpDownIcon;
-                      return (
-                        <button
-                          key={column}
-                          onClick={() => handleSortFieldChange(sortField)}
-                          className={`inline-flex items-center gap-1 px-2 py-1 rounded transition-colors ${
-                            isSorted
-                              ? 'bg-red-900/40 text-white'
-                              : 'hover:bg-gray-700/60 text-gray-300'
-                          }`}
-                          title={`Sort by ${getColumnLabel(column)}`}
-                        >
-                          {getColumnLabel(column)}
-                          <SortIcon className={`w-3 h-3 ${isSorted ? 'text-white' : 'text-gray-500'}`} />
-                        </button>
-                      );
-                    })}
+                <div>
+                  {/* Mobile-only sort + select-all bar. The full table-style
+                      header below would cram its column labels into ~40 px
+                      each on a phone viewport (labels overlapping each
+                      other), and the cards under it already display every
+                      field anyway, so on mobile we collapse the header into
+                      a single Sort select + direction toggle + Select All
+                      checkbox. The desktop table header continues to be
+                      the source of truth above sm. */}
+                  <div className="sm:hidden flex items-center gap-2 bg-gray-800 text-gray-300 text-xs px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={isAllQueueSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = isSomeQueueSelected;
+                      }}
+                      onChange={toggleSelectAllQueue}
+                      className="w-4 h-4 bg-gray-700 border-gray-600 rounded text-red-600 focus:ring-red-600 focus:ring-2 cursor-pointer flex-shrink-0"
+                      title={isAllQueueSelected ? 'Deselect all' : 'Select all'}
+                    />
+                    <span className="text-gray-400 flex-shrink-0">Sort:</span>
+                    <select
+                      value={queueSortField}
+                      onChange={(e) => setQueueSortField(e.target.value as QueueSortField)}
+                      className="flex-1 min-w-0 px-2 py-1 bg-gray-700 border border-gray-600 text-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-red-500"
+                    >
+                      <option value="event">Event</option>
+                      <option value="title">Episode Title</option>
+                      <option value="quality">Quality</option>
+                      <option value="status">Status</option>
+                      <option value="progress">Progress</option>
+                      <option value="size">Size</option>
+                      <option value="client">Download Client</option>
+                      <option value="added">Added</option>
+                    </select>
+                    <button
+                      onClick={() => setQueueSortDirection(d => d === 'asc' ? 'desc' : 'asc')}
+                      className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded flex-shrink-0"
+                      title={`Sort direction: ${queueSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    >
+                      {queueSortDirection === 'asc'
+                        ? <ChevronUpIcon className="w-4 h-4" />
+                        : <ChevronDownIcon className="w-4 h-4" />}
+                    </button>
                   </div>
+                  {/* Desktop header table: same table-fixed + colgroup +
+                      thead used by compact mode, but with no tbody. Re-using
+                      the table structure (rather than emulating it with a
+                      flex bar) means the header is visually identical to
+                      compact — full-width gray bar that goes edge-to-edge
+                      with column labels distributed by the same column
+                      weights. Hidden below sm because the labels don't fit
+                      on a phone-width viewport. */}
+                  <table className="hidden sm:table w-full table-fixed">
+                    <colgroup>
+                      <col style={{ width: '40px' }} />
+                      {columnOrder.map(column => {
+                        if (!columnVisibility[column]) return null;
+                        return <col key={column} style={{ width: `${COLUMN_WIDTH_WEIGHTS[column]}%` }} />;
+                      })}
+                    </colgroup>
+                    <thead>
+                      <tr className="bg-gray-800 text-gray-300 text-xs">
+                        <th className="px-3 py-1.5 w-10">
+                          <input
+                            type="checkbox"
+                            checked={isAllQueueSelected}
+                            ref={(el) => {
+                              if (el) el.indeterminate = isSomeQueueSelected;
+                            }}
+                            onChange={toggleSelectAllQueue}
+                            className="w-4 h-4 bg-gray-700 border-gray-600 rounded text-red-600 focus:ring-red-600 focus:ring-2 cursor-pointer"
+                            title={isAllQueueSelected ? 'Deselect all' : 'Select all'}
+                          />
+                        </th>
+                        {columnOrder.map(column => {
+                          if (!columnVisibility[column]) return null;
+                          const align = column === 'event' || column === 'title' ? 'text-left' : column === 'actions' ? 'text-right' : 'text-center';
+                          const sortFieldForColumn: Partial<Record<keyof ColumnVisibility, QueueSortField>> = {
+                            event: 'event', title: 'title', quality: 'quality',
+                            status: 'status', progress: 'progress', size: 'size',
+                            client: 'client', added: 'added',
+                          };
+                          const sortField = sortFieldForColumn[column];
+                          const isSorted = sortField && sortField === queueSortField;
+                          const SortIcon = !sortField
+                            ? null
+                            : isSorted
+                              ? (queueSortDirection === 'asc' ? ChevronUpIcon : ChevronDownIcon)
+                              : ChevronUpDownIcon;
+                          const justify = align === 'text-left' ? 'justify-start' : align === 'text-right' ? 'justify-end' : 'justify-center';
+                          return (
+                            <th
+                              key={column}
+                              className={`${align === 'text-left' ? 'px-3' : 'px-2'} py-1.5 ${align} font-medium ${sortField ? 'cursor-pointer hover:text-white select-none' : ''}`}
+                              onClick={sortField ? () => handleSortFieldChange(sortField) : undefined}
+                              title={sortField ? `Sort by ${getColumnLabel(column)}` : undefined}
+                            >
+                              <span className={`inline-flex items-center gap-1 ${justify}`}>
+                                {getColumnLabel(column)}
+                                {SortIcon && (
+                                  <SortIcon className={`w-3 h-3 ${isSorted ? 'text-white' : 'text-gray-500'}`} />
+                                )}
+                              </span>
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    </thead>
+                  </table>
+                  {/* Card list — independent flow below the header so cards
+                      don't have to align to the column grid above. */}
+                  <div className="space-y-3 mt-3">
                   {/* Pending Import Cards */}
-                  {pendingImports.map((pendingImport) => (
+                  {visiblePendingImports.map((pendingImport) => (
                     <div
                       key={`pending-${pendingImport.id}`}
-                      className={`bg-gray-800 border rounded-lg p-4 hover:bg-gray-750 transition-colors ${pendingImport.isPack ? 'border-purple-700' : 'border-yellow-700'}`}
+                      className={`bg-gray-800 border rounded-lg p-4 hover:bg-gray-750 transition-colors ${selectedPendingIds.has(pendingImport.id) ? 'border-red-600' : pendingImport.isPack ? 'border-purple-700' : 'border-yellow-700'}`}
                     >
                       <div className="flex items-start justify-between">
+                        <input
+                          type="checkbox"
+                          checked={selectedPendingIds.has(pendingImport.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelectRow('p', pendingImport.id, e.shiftKey);
+                          }}
+                          onChange={() => { /* handled by onClick to read shiftKey */ }}
+                          className="mt-1.5 mr-3 w-4 h-4 bg-gray-700 border-gray-600 rounded text-red-600 focus:ring-red-600 focus:ring-2 cursor-pointer flex-shrink-0"
+                        />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-3 mb-2 flex-wrap">
                             <h3 className="text-lg font-semibold text-white">
@@ -1485,7 +1815,11 @@ export default function ActivityPage() {
                             <input
                               type="checkbox"
                               checked={selectedQueueIds.has(item.id)}
-                              onChange={() => toggleSelectQueueItem(item.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelectRow('q', item.id, e.shiftKey);
+                              }}
+                              onChange={() => { /* handled by onClick to read shiftKey */ }}
                               className="mt-1.5 w-4 h-4 bg-gray-700 border-gray-600 rounded text-red-600 focus:ring-red-600 focus:ring-2 cursor-pointer flex-shrink-0"
                             />
                             <div className="flex-1 min-w-0">
@@ -1557,6 +1891,12 @@ export default function ActivityPage() {
                       </div>
                     );
                   })}
+                  </div>
+                </div>
+              )}
+              {totalHidden > 0 && (
+                <div className="px-4 py-2 text-xs text-gray-400 text-center bg-gray-900/40 border-t border-gray-800">
+                  Showing {totalVisible} of {totalAvailable} items. Increase the Page Size in View Options to show more.
                 </div>
               )}
 </>

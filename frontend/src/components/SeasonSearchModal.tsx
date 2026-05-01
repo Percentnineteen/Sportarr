@@ -619,7 +619,7 @@ export default function SeasonSearchModal({
                     )}
 
                     {/* Content - Table Layout matching ManualSearchModal */}
-                    <div className="max-h-[65vh] overflow-y-auto">
+                    <div className="max-h-[65vh] overflow-auto">
                       {isSearching ? (
                         <div className="p-8 text-center">
                           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>

@@ -25,7 +25,7 @@ public static class SonarrCommandEndpoints
             int? seasonNumber,
             bool? filterExistingFiles) =>
         {
-            logger.LogInformation("[DECYPHARR] GET /api/v3/manualimport - folder={Folder}, downloadId={DownloadId}, seriesId={SeriesId}",
+            logger.LogDebug("[DECYPHARR] GET /api/v3/manualimport - folder={Folder}, downloadId={DownloadId}, seriesId={SeriesId}",
                 folder, downloadId, seriesId);
 
             if (string.IsNullOrEmpty(folder))

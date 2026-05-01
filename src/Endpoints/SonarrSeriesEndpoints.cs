@@ -17,7 +17,7 @@ public static class SonarrSeriesEndpoints
         // Supports ?tvdbId={id} query parameter for lookup by Sportarr API external ID
         app.MapGet("/api/v3/series", async (SportarrDbContext db, ILogger<Program> logger, int? tvdbId) =>
         {
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/series - tvdbId={TvdbId}", tvdbId);
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/series - tvdbId={TvdbId}", tvdbId);
 
             IQueryable<League> query = db.Leagues;
 
@@ -103,7 +103,7 @@ public static class SonarrSeriesEndpoints
         // GET /api/v3/series/{id} - Get specific series by ID (Maintainerr compatibility)
         app.MapGet("/api/v3/series/{id:int}", async (int id, SportarrDbContext db, ILogger<Program> logger) =>
         {
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/series/{Id}", id);
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/series/{Id}", id);
 
             var league = await db.Leagues.FindAsync(id);
             if (league == null)

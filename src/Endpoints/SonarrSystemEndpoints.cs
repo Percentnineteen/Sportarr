@@ -13,7 +13,10 @@ public static class SonarrSystemEndpoints
         // GET /api/v3/system/status - System status (Sonarr v3 API for Prowlarr)
         app.MapGet("/api/v3/system/status", (HttpContext context, ILogger<Program> logger) =>
         {
-            logger.LogInformation("[PROWLARR] GET /api/v3/system/status - Prowlarr requesting system status (v3 API)");
+            // Prowlarr polls this endpoint on a cadence for connectivity checks.
+            // Request-logging middleware already records every inbound HTTP call at
+            // Info, so a second per-call announcement here is pure duplication.
+            logger.LogDebug("[PROWLARR] GET /api/v3/system/status - Prowlarr requesting system status (v3 API)");
 
             return Results.Ok(new
             {

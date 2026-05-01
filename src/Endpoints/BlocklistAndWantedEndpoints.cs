@@ -82,7 +82,7 @@ app.MapGet("/api/wanted/missing", async (int page, int pageSize, SportarrDbConte
 {
     try
     {
-        logger.LogInformation("[Wanted] GET /api/wanted/missing - page: {Page}, pageSize: {PageSize}", page, pageSize);
+        logger.LogDebug("[Wanted] GET /api/wanted/missing - page: {Page}, pageSize: {PageSize}", page, pageSize);
 
         var now = DateTime.UtcNow;
         var query = db.Events
@@ -94,7 +94,7 @@ app.MapGet("/api/wanted/missing", async (int page, int pageSize, SportarrDbConte
             .OrderByDescending(e => e.EventDate);
 
         var totalRecords = await query.CountAsync();
-        logger.LogInformation("[Wanted] Found {Count} missing events", totalRecords);
+        logger.LogDebug("[Wanted] Found {Count} missing events", totalRecords);
 
         var events = await query
             .Skip((page - 1) * pageSize)
@@ -126,7 +126,7 @@ app.MapGet("/api/wanted/cutoff-unmet", async (int page, int pageSize, SportarrDb
 {
     try
     {
-        logger.LogInformation("[Wanted] GET /api/wanted/cutoff-unmet - page: {Page}, pageSize: {PageSize}", page, pageSize);
+        logger.LogDebug("[Wanted] GET /api/wanted/cutoff-unmet - page: {Page}, pageSize: {PageSize}", page, pageSize);
 
         // For now, return events that have files but could be upgraded
         // TODO: In a full implementation, this would check against quality profile cutoffs
@@ -139,7 +139,7 @@ app.MapGet("/api/wanted/cutoff-unmet", async (int page, int pageSize, SportarrDb
             .OrderBy(e => e.EventDate);
 
         var totalRecords = await query.CountAsync();
-        logger.LogInformation("[Wanted] Found {Count} total events with files and quality", totalRecords);
+        logger.LogDebug("[Wanted] Found {Count} total events with files and quality", totalRecords);
 
         var events = await query
             .Skip((page - 1) * pageSize)

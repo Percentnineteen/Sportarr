@@ -11,6 +11,12 @@ jobs:
     permissions:
       contents: write
       packages: write
+      # Required for github/codeql-action/upload-sarif to publish Trivy
+      # results to the Security tab. Without this, the SARIF upload step
+      # fails with "Resource not accessible by integration" and (because
+      # Discord notification + Windows installer build are gated on the
+      # job's success status) the rest of the release silently skips.
+      security-events: write
     outputs:
       version: ${{ steps.bump_version.outputs.version }}
       version_number: ${{ steps.bump_version.outputs.version_number }}
@@ -460,7 +466,14 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy results to GitHub Security tab
+        # Defense in depth alongside the explicit security-events permission
+        # above: a transient GitHub-side outage on the Security-tab upload
+        # API used to flip the whole job to failure, which silently skipped
+        # the Discord notification and the Windows installer build. Treat
+        # the SARIF upload as best-effort so a security-tab hiccup doesn't
+        # cascade into a broken release.
         if: success()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif

@@ -29,7 +29,7 @@ public static class SonarrCalendarEndpoint
             var rangeStart = start ?? DateTime.UtcNow.Date;
             var rangeEnd = end ?? DateTime.UtcNow.Date.AddDays(7);
 
-            logger.LogInformation("[V3-COMPAT] GET /api/v3/calendar - start={Start}, end={End}, unmonitored={Unmon}, includeSeries={IncSeries}",
+            logger.LogDebug("[V3-COMPAT] GET /api/v3/calendar - start={Start}, end={End}, unmonitored={Unmon}, includeSeries={IncSeries}",
                 rangeStart, rangeEnd, unmonitored, includeSeries);
 
             var query = db.Events

@@ -1374,8 +1374,13 @@ export default function LeagueDetailPage() {
                   <div key={season} className="border-b border-red-900/30 last:border-b-0">
                     {/* Season Header Row */}
                     {compactView ? (
-                      /* Compact: single inline row with title + actions */
-                      <div className="flex items-center gap-2 px-4 py-2 hover:bg-gray-800/30 transition-colors">
+                      /* Compact: single inline row with title + actions.
+                          Wraps to two rows on mobile (title row, then
+                          actions row) so the Quality select doesn't
+                          squeeze the Season title into two-character-wide
+                          column. flex-nowrap kicks back in at sm where
+                          there's enough horizontal space for everything. */
+                      <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-2 gap-y-1.5 px-4 py-2 hover:bg-gray-800/30 transition-colors">
                         {/* Monitor Toggle */}
                         <button
                           onClick={(e) => {
@@ -1397,17 +1402,22 @@ export default function LeagueDetailPage() {
                           )}
                         </button>
 
-                        {/* Expand/Collapse + Title */}
+                        {/* Expand/Collapse + Title — flex-1 so title takes
+                            the rest of the first row on mobile (where
+                            actions wrap below) and shares space with
+                            actions on desktop. whitespace-nowrap on the
+                            title prevents "Season 2026" from breaking into
+                            two lines when the column is narrow. */}
                         <button
                           onClick={() => toggleSeason(season)}
-                          className="flex items-center gap-1.5 flex-1 text-left min-w-0"
+                          className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
                         >
                           {isExpanded ? (
                             <ChevronDownIcon className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                           ) : (
                             <ChevronRightIcon className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                           )}
-                          <span className="text-sm font-semibold text-white">
+                          <span className="text-sm font-semibold text-white whitespace-nowrap">
                             {season === 'Unknown' ? 'No Season Info' : `Season ${season}`}
                           </span>
                           <span className="text-xs text-gray-500 ml-1 truncate">
@@ -1417,8 +1427,9 @@ export default function LeagueDetailPage() {
                           </span>
                         </button>
 
-                        {/* Inline Actions */}
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {/* Inline Actions — basis-full on mobile pushes them
+                            to a second row under the title; auto on sm+. */}
+                        <div className="flex items-center gap-1.5 basis-full sm:basis-auto sm:flex-shrink-0 justify-end">
                           {/* Quality Profile */}
                           <select
                             value={league?.qualityProfileId || ''}
@@ -1437,28 +1448,31 @@ export default function LeagueDetailPage() {
                             ))}
                           </select>
 
-                          {/* Manual Search */}
+                          {/* Manual Search — bigger tap target on mobile
+                              (p-2 + w-4 icons) so it clears the 40 px
+                              minimum for touch UI; collapses to the dense
+                              p-1.5 desktop sizing on sm+. */}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setSeasonSearchModal({ isOpen: true, season });
                             }}
-                            className="p-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+                            className="p-2 sm:p-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
                             title="Manual Search - Browse and select releases for all events in this season"
                           >
-                            <UserIcon className="w-3.5 h-3.5" />
+                            <UserIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                           </button>
 
                           {/* Auto Search */}
                           <button
                             onClick={(e) => { e.stopPropagation(); handleSeasonSearch(season); }}
                             disabled={searchingSeasons.has(season)}
-                            className="p-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-600/50 disabled:cursor-not-allowed text-white rounded transition-colors"
+                            className="p-2 sm:p-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-600/50 disabled:cursor-not-allowed text-white rounded transition-colors"
                             title="Automatic Search - Search for all monitored events in this season"
                           >
                             {searchingSeasons.has(season)
-                              ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" />
-                              : <MagnifyingGlassIcon className="w-3.5 h-3.5" />}
+                              ? <ArrowPathIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5 animate-spin" />
+                              : <MagnifyingGlassIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />}
                           </button>
 
                           {/* Files */}
@@ -1468,10 +1482,10 @@ export default function LeagueDetailPage() {
                                 e.stopPropagation();
                                 setLeagueFilesModal({ isOpen: true, season });
                               }}
-                              className="p-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors flex items-center gap-1"
+                              className="p-2 sm:p-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors flex items-center gap-1"
                               title={`View all downloaded files for ${season}`}
                             >
-                              <FolderOpenIcon className="w-3.5 h-3.5" />
+                              <FolderOpenIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                               <span className="text-xs">{hasFileCount}</span>
                             </button>
                           )}
@@ -1596,13 +1610,15 @@ export default function LeagueDetailPage() {
                     {/* Season Events */}
                     {isExpanded && compactView && (
                       <div>
-                        {/* Column Headers */}
-                        <div className="flex items-center gap-2 px-4 py-1.5 text-xs text-gray-500 uppercase tracking-wider bg-gray-800/50 border-b border-red-900/20">
+                        {/* Column Headers - hidden on mobile because the row
+                            wraps into two lines below sm width and the
+                            single-row header would no longer align. */}
+                        <div className="hidden sm:flex items-center gap-2 px-4 py-1.5 text-xs text-gray-500 uppercase tracking-wider bg-gray-800/50 border-b border-red-900/20">
                           <div className="w-5 flex-shrink-0" />
                           <div className="w-20 flex-shrink-0">#</div>
                           <div className="flex-1">Title</div>
-                          <div className="w-28 flex-shrink-0">Date</div>
                           <div className="w-24 flex-shrink-0">Status</div>
+                          <div className="w-28 flex-shrink-0">Date</div>
                           <div className="w-36 flex-shrink-0">Quality</div>
                           <div className="w-20 flex-shrink-0 text-right">Actions</div>
                         </div>
@@ -1620,7 +1636,16 @@ export default function LeagueDetailPage() {
 
                             return (
                               <div key={event.id}>
-                                <div className="flex items-center gap-2 px-4 py-1.5 hover:bg-gray-800/50 transition-colors text-sm">
+                                {/* Responsive compact row.
+                                    Desktop (sm+): single horizontal line with
+                                    fixed-width columns aligned to the header.
+                                    Mobile (< sm): wraps after the Status badge
+                                    into a second line so the date, quality
+                                    select, and action buttons stay reachable
+                                    without horizontal scrolling. The zero-
+                                    height spacer with basis-full + sm:hidden
+                                    forces the wrap break only on mobile. */}
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-1.5 hover:bg-gray-800/50 transition-colors text-sm sm:flex-nowrap">
                                   {/* Monitor Toggle */}
                                   <button
                                     onClick={() => toggleMonitorMutation.mutate({
@@ -1660,20 +1685,16 @@ export default function LeagueDetailPage() {
                                     </div>
                                   )}
 
-                                  {/* Title */}
-                                  <span className="flex-1 text-white truncate min-w-0">{event.title}</span>
+                                  {/* Title — flex-1 with min-w-0 so truncation
+                                      kicks in instead of forcing the row to
+                                      overflow on narrow viewports */}
+                                  <span className="flex-1 min-w-0 text-white truncate">{event.title}</span>
 
-                                  {/* Date */}
-                                  <span className="w-28 text-xs text-gray-400 flex-shrink-0">
-                                    {formatDateInTimezone(event.eventDate, timezone, {
-                                      month: 'short',
-                                      day: 'numeric',
-                                      year: 'numeric'
-                                    })}
-                                  </span>
-
-                                  {/* Status */}
-                                  <div className="w-24 flex-shrink-0">
+                                  {/* Status — moved up next to title so on
+                                      mobile it stays on the first line and
+                                      the user sees the at-a-glance state
+                                      without having to scroll or wrap. */}
+                                  <div className="flex-shrink-0 sm:w-24">
                                     {hasFile ? (
                                       <button
                                         onClick={() => setFileDetailModal({
@@ -1704,8 +1725,29 @@ export default function LeagueDetailPage() {
                                     )}
                                   </div>
 
-                                  {/* Quality Profile */}
-                                  <div className="w-36 flex-shrink-0">
+                                  {/* Mobile wrap break — zero-height spacer
+                                      that pushes Date/Quality/Actions to a
+                                      second visual line on mobile. Removed
+                                      on sm+ so the row stays single-line
+                                      and aligns with the header above. */}
+                                  <div className="basis-full h-0 sm:hidden" aria-hidden="true" />
+
+                                  {/* Date — desktop fixed col, mobile shrinks
+                                      to its content (left-aligned with the
+                                      indent of the second line). */}
+                                  <span className="text-xs text-gray-400 sm:w-28 sm:flex-shrink-0">
+                                    {formatDateInTimezone(event.eventDate, timezone, {
+                                      month: 'short',
+                                      day: 'numeric',
+                                      year: 'numeric'
+                                    })}
+                                  </span>
+
+                                  {/* Quality Profile — takes the remaining
+                                      space on mobile (flex-1) so the select
+                                      is wide enough to read; fixed 144px on
+                                      desktop to keep header alignment. */}
+                                  <div className="flex-1 min-w-0 sm:flex-none sm:w-36">
                                     <select
                                       value={event.qualityProfileId || league?.qualityProfileId || ''}
                                       onChange={(e) => updateQualityMutation.mutate({
@@ -1729,31 +1771,36 @@ export default function LeagueDetailPage() {
                                     </select>
                                   </div>
 
-                                  {/* Actions */}
+                                  {/* Actions — bigger tap targets on mobile
+                                      (p-2 + bordered backgrounds + w-4
+                                      icons) so the touch hitbox clears the
+                                      ~40 px minimum. Desktop keeps the
+                                      dense p-1 hover-only style so the
+                                      compact table layout doesn't grow. */}
                                   {!hasParts && (
-                                    <div className="w-20 flex items-center justify-end gap-1 flex-shrink-0">
+                                    <div className="flex items-center justify-end gap-1.5 sm:gap-1 flex-shrink-0 sm:w-20">
                                       <button
                                         onClick={() => handleManualSearch(event.id, event.title, undefined, event.files)}
-                                        className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                                        className="p-2 sm:p-1 bg-gray-700 sm:bg-transparent text-white sm:text-gray-400 hover:bg-gray-600 sm:hover:bg-gray-700 sm:hover:text-white rounded transition-colors"
                                         title="Manual Search"
                                       >
-                                        <UserIcon className="w-3.5 h-3.5" />
+                                        <UserIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                                       </button>
                                       <button
                                         onClick={() => handleAutomaticSearch(event.id, event.title, event.qualityProfileId || league?.qualityProfileId)}
                                         disabled={getSearchStatus(event.id) !== 'idle'}
-                                        className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-600/10 rounded transition-colors disabled:opacity-50"
+                                        className="p-2 sm:p-1 bg-red-600 sm:bg-transparent text-white sm:text-gray-400 hover:bg-red-700 sm:hover:bg-red-600/10 sm:hover:text-red-400 rounded transition-colors disabled:opacity-50"
                                         title="Auto Search"
                                       >
                                         {getSearchStatus(event.id) !== 'idle' ? (
-                                          <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" />
+                                          <ArrowPathIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5 animate-spin" />
                                         ) : (
-                                          <MagnifyingGlassIcon className="w-3.5 h-3.5" />
+                                          <MagnifyingGlassIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                                         )}
                                       </button>
                                     </div>
                                   )}
-                                  {hasParts && <div className="w-20 flex-shrink-0" />}
+                                  {hasParts && <div className="hidden sm:block sm:w-20 sm:flex-shrink-0" />}
                                 </div>
 
                                 {/* Compact Multi-Part - Single horizontal row with all parts inline */}
@@ -1793,14 +1840,14 @@ export default function LeagueDetailPage() {
                                                 monitoredParts: allPartsSelected ? null : (newParts.length > 0 ? newParts.join(',') : '')
                                               });
                                             }}
-                                            className="focus:outline-none flex-shrink-0"
+                                            className="focus:outline-none flex-shrink-0 p-1 sm:p-0 -ml-1 sm:ml-0"
                                             disabled={updateEventPartsMutation.isPending}
                                             title={isPartMonitored ? `${part.label}: Monitored, click to unmonitor` : `${part.label}: Unmonitored, click to monitor`}
                                           >
                                             {isPartMonitored ? (
-                                              <CheckCircleIcon className="w-3.5 h-3.5 text-green-500" />
+                                              <CheckCircleIcon className="w-4 h-4 sm:w-3.5 sm:h-3.5 text-green-500" />
                                             ) : (
-                                              <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-600" />
+                                              <div className="w-4 h-4 sm:w-3.5 sm:h-3.5 rounded-full border-2 border-gray-600" />
                                             )}
                                           </button>
 
@@ -1814,24 +1861,27 @@ export default function LeagueDetailPage() {
                                             <FilmIcon className="w-3 h-3 text-green-500" />
                                           )}
 
-                                          {/* Part Search Actions */}
+                                          {/* Part Search Actions — bigger on
+                                              mobile (p-1.5 + bordered bg)
+                                              so per-part search/auto-search
+                                              is reachable without zooming. */}
                                           <button
                                             onClick={() => handleManualSearch(event.id, event.title, part.name, event.files)}
-                                            className="p-0.5 text-gray-500 hover:text-white rounded transition-colors"
+                                            className="p-1.5 sm:p-0.5 bg-gray-700 sm:bg-transparent text-white sm:text-gray-500 hover:bg-gray-600 sm:hover:bg-transparent sm:hover:text-white rounded transition-colors"
                                             title={`Manual Search ${part.label}`}
                                           >
-                                            <UserIcon className="w-3 h-3" />
+                                            <UserIcon className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                                           </button>
                                           <button
                                             onClick={() => handleAutomaticSearch(event.id, event.title, event.qualityProfileId || league?.qualityProfileId, part.name)}
                                             disabled={getSearchStatus(event.id, part.name) !== 'idle'}
-                                            className="p-0.5 text-gray-500 hover:text-red-400 rounded transition-colors disabled:opacity-50"
+                                            className="p-1.5 sm:p-0.5 bg-red-600 sm:bg-transparent text-white sm:text-gray-500 hover:bg-red-700 sm:hover:bg-transparent sm:hover:text-red-400 rounded transition-colors disabled:opacity-50"
                                             title={`Auto Search ${part.label}`}
                                           >
                                             {getSearchStatus(event.id, part.name) !== 'idle' ? (
-                                              <ArrowPathIcon className="w-3 h-3 animate-spin" />
+                                              <ArrowPathIcon className="w-3.5 h-3.5 sm:w-3 sm:h-3 animate-spin" />
                                             ) : (
-                                              <MagnifyingGlassIcon className="w-3 h-3" />
+                                              <MagnifyingGlassIcon className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                                             )}
                                           </button>
                                         </div>

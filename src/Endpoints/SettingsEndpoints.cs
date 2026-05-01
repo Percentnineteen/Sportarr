@@ -29,7 +29,12 @@ app.MapGet("/api/settings", async (ConfigService configService, SportarrDbContex
     // Debug logging to diagnose folder settings load issue
     if (dbMediaSettings != null)
     {
-        logger.LogInformation("[CONFIG] GET /api/settings - Database folder settings: CreateLeagueFolders={League}, CreateSeasonFolders={Season}, CreateEventFolders={Event}, ReorganizeFolders={Reorg}",
+        // Diagnostic snapshot of the four folder booleans on every read.
+        // The frontend polls /api/settings on a cadence, so emitting this
+        // at Info dumps four lines per poll into production logs forever.
+        // Keep it as Debug so it's available when chasing a folder-config
+        // mismatch but never runs at the default Info level.
+        logger.LogDebug("[CONFIG] GET /api/settings - Database folder settings: CreateLeagueFolders={League}, CreateSeasonFolders={Season}, CreateEventFolders={Event}, ReorganizeFolders={Reorg}",
             dbMediaSettings.CreateLeagueFolders,
             dbMediaSettings.CreateSeasonFolders,
             dbMediaSettings.CreateEventFolders,
@@ -81,7 +86,11 @@ app.MapGet("/api/settings", async (ConfigService configService, SportarrDbContex
         LastModified = dbMediaSettings?.LastModified
     };
     var mediaSettingsJson = System.Text.Json.JsonSerializer.Serialize(mediaSettingsObj, jsonOptions);
-    logger.LogInformation("[CONFIG] GET /api/settings - MediaManagementSettings JSON: {Json}", mediaSettingsJson);
+    // Full JSON dump on every read. Useful when reproducing a settings-render
+    // mismatch between backend and frontend, but the frontend polls this
+    // endpoint so leaving it at Info pumps a multi-KB payload into logs on
+    // every poll. Keep at Debug.
+    logger.LogDebug("[CONFIG] GET /api/settings - MediaManagementSettings JSON: {Json}", mediaSettingsJson);
 
     // Convert Config to AppSettings format for frontend compatibility
     var settings = new AppSettings
