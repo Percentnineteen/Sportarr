@@ -137,7 +137,19 @@ public static class ServiceCollectionExtensions
             });
 
         // Sportarr API client (sportarr.net) for sports metadata.
-        // Without an explicit timeout, .NET defaults to 100s × 3 retries = 5+ min thread-pin on a hung sportarr.net request.
+        // Timeout of 90s rather than the previous 30s. Cache hits on
+        // sportarr.net come back in <100ms regardless; the long tail
+        // is cache misses, where sportarr.net has to go upstream to
+        // TheSportsDB. On slow-upstream days TheSportsDB can take
+        // 30-90s to respond, and the prior 30s cap was firing before
+        // those responses landed -- every cold-cache historical
+        // season for the user's library was timing out and being
+        // skipped, leaving gaps in the local Sportarr DB even when
+        // a few extra seconds would have completed the fetch. The
+        // outer 90s also leaves enough room for the Polly retry
+        // policy below (2s+4s+8s+16s = 30s of backoff alone) to
+        // actually fire its full sequence on transient 5xx, instead
+        // of being clipped by the request timeout half-way through.
         services.AddHttpClient<SportarrApiClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
@@ -146,18 +158,40 @@ public static class ServiceCollectionExtensions
             })
             .ConfigureHttpClient(client =>
             {
-                client.Timeout = TimeSpan.FromSeconds(30);
+                client.Timeout = TimeSpan.FromSeconds(90);
                 client.DefaultRequestHeaders.UserAgent.ParseAdd("Sportarr/1.0");
             })
-            .AddTransientHttpErrorPolicy(policyBuilder =>
-                policyBuilder.WaitAndRetryAsync(
-                    retryCount: 3,
-                    sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                    onRetry: (outcome, timespan, retryAttempt, context) =>
+            // Retry transient 5xx / network errors with a short exponential
+            // backoff (2s, 4s, 8s). Retry 429 separately with a much longer
+            // base (8s, 16s, 32s, 64s) and honor the server's Retry-After
+            // header when present. 429 means sportarr.net is explicitly
+            // asking us to slow down, so doubling down with a fast retry
+            // schedule would make things worse for everyone.
+            .AddPolicyHandler(HttpPolicyExtensions
+                .HandleTransientHttpError()
+                .OrResult(r => r.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                .WaitAndRetryAsync(
+                    retryCount: 4,
+                    sleepDurationProvider: (attempt, outcome, _) =>
                     {
-                        Console.WriteLine($"[SportarrAPI] Retry {retryAttempt} after {timespan.TotalSeconds}s delay");
-                    }
-                ));
+                        var status = outcome.Result?.StatusCode;
+                        if (status == System.Net.HttpStatusCode.TooManyRequests)
+                        {
+                            var retryAfter = outcome.Result?.Headers.RetryAfter?.Delta;
+                            if (retryAfter is { } hint && hint > TimeSpan.Zero)
+                            {
+                                return hint;
+                            }
+                            return TimeSpan.FromSeconds(Math.Pow(2, attempt + 2));
+                        }
+                        return TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                    },
+                    onRetryAsync: (outcome, timespan, retryAttempt, _) =>
+                    {
+                        var status = outcome.Result?.StatusCode.ToString() ?? outcome.Exception?.GetType().Name ?? "unknown";
+                        Console.WriteLine($"[SportarrAPI] Retry {retryAttempt} after {timespan.TotalSeconds:F1}s ({status})");
+                        return Task.CompletedTask;
+                    }));
 
         return services;
     }

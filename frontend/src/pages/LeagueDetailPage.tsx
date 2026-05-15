@@ -12,6 +12,7 @@ import EventFileDetailModal from '../components/EventFileDetailModal';
 import LeagueFilesModal from '../components/LeagueFilesModal';
 import EventStatusBadge from '../components/EventStatusBadge';
 import ManualImportModal from '../components/ManualImportModal';
+import RefreshScopeModal, { type RefreshScope } from '../components/RefreshScopeModal';
 import { useSearchQueueStatus, useDownloadQueue } from '../api/hooks';
 import { useUISettings } from '../hooks/useUISettings';
 import { useCompactView } from '../hooks/useCompactView';
@@ -224,6 +225,7 @@ export default function LeagueDetailPage() {
     season: '',
   });
   const [isEditTeamsModalOpen, setIsEditTeamsModalOpen] = useState(false);
+  const [isRefreshScopeModalOpen, setIsRefreshScopeModalOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteLeagueFolder, setDeleteLeagueFolder] = useState(false);
   const [revealedScores, setRevealedScores] = useState<Set<number>>(new Set());
@@ -969,16 +971,19 @@ export default function LeagueDetailPage() {
     }
   };
 
-  const handleRefreshEvents = async () => {
+  const handleRefreshEvents = async (scope: RefreshScope = 'current') => {
     if (!id) return;
+    setIsRefreshScopeModalOpen(false);
 
     try {
+      const scopeLabel = scope === 'full' ? 'all seasons' : 'current season';
       toast.info('Refreshing events...', {
-        description: `Fetching events from Sportarr for ${league?.name}`,
+        description: `Fetching ${scopeLabel} from Sportarr for ${league?.name}`,
       });
 
-      // Don't specify seasons - let the backend fetch all available seasons from Sportarr
-      const response = await apiClient.post(`/leagues/${id}/refresh-events`, {});
+      // Don't specify seasons - let the backend fetch the available seasons
+      // from Sportarr API, scoped to whichever window the user picked.
+      const response = await apiClient.post(`/leagues/${id}/refresh-events`, { scope });
 
       if (response.data.success) {
         toast.success('Events refreshed successfully', {
@@ -1229,7 +1234,7 @@ export default function LeagueDetailPage() {
                 <span>{isLeagueSearching ? 'Searching...' : 'Search League'}</span>
               </button>
               <button
-                onClick={handleRefreshEvents}
+                onClick={() => setIsRefreshScopeModalOpen(true)}
                 className={BUTTON_INFO}
                 title="Refresh events from Sportarr API"
               >
@@ -2590,6 +2595,14 @@ export default function LeagueDetailPage() {
         isAdding={updateLeagueSettingsMutation.isPending}
         editMode={true}
         leagueId={editModalDataRef.current?.leagueId || null}
+      />
+
+      {/* Refresh Scope Modal - asks user whether to refresh current or all seasons */}
+      <RefreshScopeModal
+        isOpen={isRefreshScopeModalOpen}
+        onClose={() => setIsRefreshScopeModalOpen(false)}
+        onConfirm={handleRefreshEvents}
+        leagueName={league?.name}
       />
 
       {/* Delete Confirmation Modal */}

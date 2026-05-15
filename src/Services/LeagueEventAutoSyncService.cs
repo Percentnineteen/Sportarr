@@ -1,4 +1,5 @@
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Microsoft.EntityFrameworkCore;
 
 namespace Sportarr.Api.Services;
@@ -12,6 +13,21 @@ public class LeagueEventAutoSyncService : BackgroundService
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<LeagueEventAutoSyncService> _logger;
     private readonly TimeSpan _syncInterval = TimeSpan.FromHours(24); // Sync every 24 hours (events rarely change)
+    private readonly TimeSpan _maxJitter = TimeSpan.FromMinutes(30); // +/-30min spread to break deploy-time alignment
+
+    /// <summary>
+    /// Returns the base sync interval with +/-30 minutes of random jitter.
+    /// Without this, every install that deployed at the same release time
+    /// wakes up to fire its 24h auto-sync within minutes of each other,
+    /// creating an avoidable thundering-herd on sportarr.net. The
+    /// per-instance random offset is recomputed each cycle so a single
+    /// unlucky install doesn't permanently land in the same slot.
+    /// </summary>
+    private TimeSpan JitteredInterval()
+    {
+        var jitterMs = Random.Shared.Next(-(int)_maxJitter.TotalMilliseconds, (int)_maxJitter.TotalMilliseconds);
+        return _syncInterval + TimeSpan.FromMilliseconds(jitterMs);
+    }
 
     public LeagueEventAutoSyncService(
         IServiceProvider serviceProvider,
@@ -40,9 +56,12 @@ public class LeagueEventAutoSyncService : BackgroundService
                 _logger.LogError(ex, "[Auto-Sync] Error during automatic event sync: {Message}", ex.Message);
             }
 
-            // Wait for next sync interval
-            _logger.LogInformation("[Auto-Sync] Next sync scheduled in {Hours} hours", _syncInterval.TotalHours);
-            await Task.Delay(_syncInterval, stoppingToken);
+            // Wait for next sync interval (with +/-30min jitter so installs
+            // deployed at the same time don't all hit sportarr.net within
+            // minutes of each other 24h later).
+            var nextInterval = JitteredInterval();
+            _logger.LogInformation("[Auto-Sync] Next sync scheduled in {Hours:F2} hours (jittered)", nextInterval.TotalHours);
+            await Task.Delay(nextInterval, stoppingToken);
         }
 
         _logger.LogInformation("[Auto-Sync] League Event Auto-Sync Service stopped");
@@ -74,6 +93,8 @@ public class LeagueEventAutoSyncService : BackgroundService
         int totalUpdated = 0;
         int totalSkipped = 0;
         int totalFailed = 0;
+        int totalAgeSkipped = 0;
+        var syncStartedAt = DateTime.UtcNow;
 
         // Sync events for each monitored league
         foreach (var league in monitoredLeagues)
@@ -81,15 +102,38 @@ public class LeagueEventAutoSyncService : BackgroundService
             if (cancellationToken.IsCancellationRequested)
                 break;
 
+            // Per-league age gate. Skip leagues whose LastUpdate is
+            // recent enough that walking the schedule again would just
+            // be wasted upstream traffic. The refresh button still
+            // bypasses this check.
+            var decision = ShouldRefreshLeague.Evaluate(league, syncStartedAt);
+            if (!decision.ShouldRefresh)
+            {
+                _logger.LogInformation("[Auto-Sync] Skipping {LeagueName} ({Sport}): {Reason}",
+                    league.Name, league.Sport, decision.Reason);
+                totalAgeSkipped++;
+                continue;
+            }
+
             try
             {
-                _logger.LogInformation("[Auto-Sync] Syncing events for league: {LeagueName} ({Sport})",
-                    league.Name, league.Sport);
+                _logger.LogInformation("[Auto-Sync] Syncing events for league: {LeagueName} ({Sport}) ({Reason})",
+                    league.Name, league.Sport, decision.Reason);
 
-                // Use fullHistoricalSync=true to ensure ALL seasons are synced
-                // This catches new seasons (e.g., after Jan 1) and any events that were
-                // added to historical seasons. The API caches results so this is efficient.
-                var result = await syncService.SyncLeagueEventsAsync(league.Id, seasons: null, fullHistoricalSync: true);
+                // fullHistoricalSync=false on the scheduled path. Historical
+                // seasons are populated when the league is first added (the
+                // POST /api/leagues handler runs a one-time full sync) and
+                // don't change afterward, so walking them again on every
+                // scheduled cycle is wasted upstream traffic against
+                // sportarr-api / thesportsdb. The optimized branch in
+                // LeagueEventSyncService restricts the walk to current and
+                // future seasons, which is what this background pass needs --
+                // catching newly added games in the active season and any
+                // newly added upcoming seasons. New seasons that start
+                // mid-year are picked up because LeagueEventSync also
+                // unions in the next 5 calendar years on top of whatever
+                // the optimized filter returns.
+                var result = await syncService.SyncLeagueEventsAsync(league.Id, seasons: null, fullHistoricalSync: false);
 
                 if (result.Success)
                 {
@@ -120,8 +164,8 @@ public class LeagueEventAutoSyncService : BackgroundService
         }
 
         _logger.LogInformation(
-            "[Auto-Sync] Automatic sync completed - New: {New}, Updated: {Updated}, Skipped: {Skipped}, Failed: {Failed}",
-            totalNew, totalUpdated, totalSkipped, totalFailed);
+            "[Auto-Sync] Automatic sync completed - New: {New}, Updated: {Updated}, Skipped: {Skipped}, Failed: {Failed}, AgeSkipped: {AgeSkipped}",
+            totalNew, totalUpdated, totalSkipped, totalFailed, totalAgeSkipped);
 
         // After syncing events, trigger DVR scheduling for any new monitored events
         if (totalNew > 0)

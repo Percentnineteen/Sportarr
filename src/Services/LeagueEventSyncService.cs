@@ -1,4 +1,5 @@
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -164,14 +165,23 @@ public class LeagueEventSyncService
                         seasons.Count, skippedCount, string.Join(", ", seasons));
                 }
 
-                // Add future years to catch upcoming events (current year + 5 years)
+                // Add future seasons to catch upcoming events even when
+                // /list/seasons hasn't picked them up upstream yet.
+                // Limited to current year + 2 years -- previously we
+                // walked +5 years which produced lots of wasted upstream
+                // round-trips against future seasons thesportsdb has no
+                // data for yet. Two years forward is enough cushion for
+                // the dual-year-span leagues (NHL 2025-2026 + 2026-2027)
+                // and the rare league that publishes a season list a
+                // year in advance. Format-aware so leagues like NBA /
+                // NHL get future strings like "2026-2027" instead of
+                // bare 4-digit years that would 404.
                 var currentYear = DateTime.UtcNow.Year;
-                for (int year = currentYear; year <= currentYear + 5; year++)
+                foreach (var future in SeasonStringFormatter.GenerateFutureSeasons(seasons, currentYear, 2))
                 {
-                    var yearStr = year.ToString();
-                    if (!seasons.Contains(yearStr))
+                    if (!seasons.Contains(future))
                     {
-                        seasons.Add(yearStr);
+                        seasons.Add(future);
                     }
                 }
             }
@@ -196,7 +206,15 @@ public class LeagueEventSyncService
             _logger.LogInformation("[League Event Sync] Processing season {Current}/{Total}: {Season}",
                 seasonIndex, seasons.Count, season);
 
-            var events = await _sportarrApiClient.GetLeagueSeasonAsync(league.ExternalId, season, forceRefresh);
+            // Only force-refresh current/future seasons. Historical seasons
+            // are immutable once finalized, so a cache hit against sportarr-api
+            // is correct — and dropping forceRefresh on them lets the refresh
+            // button walk the full season list (picking up seasons that were
+            // populated upstream after the league was first added) without
+            // multiplying TheSportsDB load by the league's history depth.
+            // For NBA that's the difference between 7 upstream fetches and 72.
+            var seasonForceRefresh = forceRefresh && IsCurrentOrFutureSeason(season);
+            var events = await _sportarrApiClient.GetLeagueSeasonAsync(league.ExternalId, season, seasonForceRefresh);
 
             if (events == null)
             {

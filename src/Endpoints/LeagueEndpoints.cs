@@ -8,12 +8,25 @@ using Sportarr.Api.Data;
 using Sportarr.Api.Models;
 using Sportarr.Api.Models.Requests;
 using Sportarr.Api.Services;
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace Sportarr.Api.Endpoints;
 
 public static class LeagueEndpoints
 {
+    // Per-league in-memory cooldown for the manual refresh button.
+    // Users who spam the button (or whose UI accidentally double-fires)
+    // were the largest single source of cache-bypassing traffic against
+    // sportarr.net before this cap landed. 5 minutes is short enough to
+    // feel responsive ("I clicked, the data refreshed, I clicked again
+    // a few minutes later") and long enough to absorb accidental
+    // duplicate clicks. State is per-process and not persisted -- a
+    // restart clears the cooldown, which is fine since the refresh
+    // pressure is exactly what a restart already trims.
+    private static readonly ConcurrentDictionary<int, DateTime> _refreshCooldowns = new();
+    private static readonly TimeSpan _refreshCooldown = TimeSpan.FromMinutes(5);
+
     public static IEndpointRouteBuilder MapLeagueEndpoints(this IEndpointRouteBuilder app)
     {
 // API: Get leagues (universal for all sports)
@@ -1335,16 +1348,33 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
                 using var scope = scopeFactory.CreateScope();
                 var syncService = scope.ServiceProvider.GetRequiredService<LeagueEventSyncService>();
 
-                // fullHistoricalSync=true: Get ALL seasons so users have complete event history.
-                // forceRefresh=true: this is a user-initiated league add — they expect the local DB
-                // to be current with TheSportsDB at the moment of add, not whatever the upstream
-                // cache happened to write last. Without forceRefresh, an add against a stale upstream
-                // cache plants stale events in the Sportarr DB and the very next click of the blue
-                // refresh button shows hundreds of "updated event" / "corrected episode number"
-                // entries — which surprises users who expect a fresh add to already be in sync.
-                // Background scheduled syncs (LeagueEventAutoSyncService) keep using the cheap
-                // cached path so the upstream API key budget isn't burned on routine work.
-                var syncResult = await syncService.SyncLeagueEventsAsync(leagueId, seasons: null, fullHistoricalSync: true, forceRefresh: true);
+                // fullHistoricalSync=true: the user just added the league,
+                // so we populate the full event history once so library
+                // scans against old files (NBA 2014-2015, etc.) can
+                // resolve. The refresh button also walks the full history
+                // (so users pick up seasons that appear upstream after
+                // the initial add), and the background auto-sync runs
+                // with fullHistoricalSync=false to avoid multiplying
+                // baseline upstream traffic by every league's history
+                // depth on every daily cycle.
+                //
+                // forceRefresh=false: re-pull from sportarr-api like every
+                // other Sportarr -> sportarr-api request, no
+                // Cache-Control: no-cache. sportarr-api owns freshness
+                // via its own TTLs (6h on current schedules, 1y on
+                // historical) and stale-while-revalidate, so there's no
+                // reason for the client to override that. Earlier
+                // versions of this handler force-refreshed the entire
+                // history on every add, which compounded with the
+                // refresh button and the auto-sync into the
+                // sustained-overload incidents on sportarr.net during
+                // May 2026. The new contract is: Sportarr never tells
+                // sportarr-api to bypass its cache. If a brand-new
+                // user adds a league sportarr-api hasn't cached yet,
+                // sportarr-api's own cache miss handler fetches fresh
+                // from TheSportsDB anyway -- the data lands in the
+                // local DB either way.
+                var syncResult = await syncService.SyncLeagueEventsAsync(leagueId, seasons: null, fullHistoricalSync: true, forceRefresh: false);
                 logger.LogInformation("[LEAGUES] Full historical sync completed for {Name}: {Message}",
                     leagueName, syncResult.Message);
             }
@@ -1732,10 +1762,37 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
 {
     logger.LogInformation("[LEAGUES] POST /api/leagues/{Id}/refresh-events - Refreshing events from Sportarr API", id);
 
+    // Per-league cooldown gate. Reject (don't queue) if the same
+    // league was refreshed less than 5 minutes ago -- a fresh click
+    // can't actually return materially different data, so letting
+    // it through just multiplies sportarr.net load with no user
+    // benefit. Returns 429 with Retry-After so the UI can show a
+    // sensible cooldown timer.
+    if (_refreshCooldowns.TryGetValue(id, out var lastRefresh))
+    {
+        var elapsed = DateTime.UtcNow - lastRefresh;
+        if (elapsed < _refreshCooldown)
+        {
+            var remaining = _refreshCooldown - elapsed;
+            logger.LogInformation(
+                "[LEAGUES] Refresh for league {Id} rejected: cooldown active ({Remaining:F0}s remaining)",
+                id, remaining.TotalSeconds);
+            context.Response.Headers["Retry-After"] = ((int)Math.Ceiling(remaining.TotalSeconds)).ToString();
+            return Results.Json(
+                new
+                {
+                    error = "Refresh recently completed. Try again shortly.",
+                    retryAfterSeconds = (int)Math.Ceiling(remaining.TotalSeconds)
+                },
+                statusCode: StatusCodes.Status429TooManyRequests);
+        }
+    }
+
     try
     {
-        // Parse request body for optional seasons filter
+        // Parse request body for optional seasons filter + scope
         List<string>? seasons = null;
+        string? scope = null;
         if (context.Request.ContentLength > 0)
         {
             var requestBody = await new StreamReader(context.Request.Body).ReadToEndAsync();
@@ -1744,18 +1801,43 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
                 PropertyNameCaseInsensitive = true
             });
             seasons = request?.Seasons;
+            scope = request?.Scope;
         }
 
-        // User-initiated refresh: ask sportarr-api to bypass its own cache via
-        // Cache-Control: no-cache so we get the latest schedule from TheSportsDB
-        // in this request. fullHistoricalSync stays true so newly added seasons
-        // upstream are picked up immediately.
-        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: true, forceRefresh: true);
+        // Scope decides whether the refresh walks every historical
+        // season or just the current/future window. "full" exists for
+        // the rare case where a user knows sportarr-api had wrong
+        // historical data that was since corrected and they want
+        // their local DB re-synced against every season. Default
+        // "current" handles the common case (did anything new happen
+        // this season?) in 5-8 cached requests instead of 40-50
+        // mostly-cold ones. Unknown / missing values fall through to
+        // "current" -- safer default for clients that don't yet send
+        // the field.
+        var fullHistoricalSync = string.Equals(scope, "full", StringComparison.OrdinalIgnoreCase);
+
+        // forceRefresh=false in both modes. sportarr-api owns its
+        // cache freshness via TTLs and stale-while-revalidate; clients
+        // should never send Cache-Control: no-cache. If a user needs
+        // wrong historical data refreshed, they pick scope="full" and
+        // walk every season -- each individual request still goes
+        // through the cache normally, but the walk includes the older
+        // seasons that don't get touched by the default "current"
+        // scope.
+        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: fullHistoricalSync, forceRefresh: false);
+        logger.LogInformation(
+            "[LEAGUES] Refresh-events for league {Id} completed (scope={Scope}, fullHistoricalSync={Full})",
+            id, scope ?? "current", fullHistoricalSync);
 
         if (!result.Success)
         {
             return Results.BadRequest(new { error = result.Message });
         }
+
+        // Record the successful refresh so the cooldown gate engages.
+        // Failures are not recorded -- if sportarr.net was actually
+        // unreachable the user should be able to retry immediately.
+        _refreshCooldowns[id] = DateTime.UtcNow;
 
         logger.LogInformation("[LEAGUES] Successfully synced events: {Message}", result.Message);
 

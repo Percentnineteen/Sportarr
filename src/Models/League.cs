@@ -587,6 +587,19 @@ public class RefreshEventsRequest
     /// Seasons to refresh (e.g., ["2024", "2025"]). If null, uses API-provided seasons.
     /// </summary>
     public List<string>? Seasons { get; set; }
+
+    /// <summary>
+    /// Scope of the refresh:
+    /// - "current" (default): only current and future seasons (~5-8 seasons). Fast.
+    ///   Suitable for "did anything new happen this season?" — the common case.
+    /// - "full": every historical season the league has on Sportarr API.
+    ///   Slow, especially when sportarr-api's cache is cold for older seasons.
+    ///   Use when the user knows historical cached data was wrong and was
+    ///   corrected on the server, and they want their local Sportarr DB
+    ///   re-synced against the corrected data.
+    /// Unknown / missing values fall through to "current" for safety.
+    /// </summary>
+    public string? Scope { get; set; }
 }
 
 /// <summary>
