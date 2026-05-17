@@ -163,6 +163,10 @@ public class RssSyncService : BackgroundService
         var qualityProfiles = await db.QualityProfiles.ToListAsync(cancellationToken);
         var customFormats = await db.CustomFormats.ToListAsync(cancellationToken);
         var releaseProfiles = await releaseProfileService.LoadReleaseProfilesAsync();
+        var earlyReleaseLimits = await db.Indexers
+            .Where(i => i.EarlyReleaseLimit.HasValue)
+            .Select(i => new { i.Id, i.EarlyReleaseLimit })
+            .ToDictionaryAsync(i => i.Id, i => i.EarlyReleaseLimit, cancellationToken);
 
         _logger.LogDebug("[RSS Sync] Loaded {ProfileCount} quality profiles, {FormatCount} custom formats, {ReleaseProfileCount} release profiles for evaluation",
             qualityProfiles.Count, customFormats.Count, releaseProfiles.Count);
@@ -177,7 +181,7 @@ public class RssSyncService : BackgroundService
             try
             {
                 // Try to match this release to a monitored event
-                var matchedEvent = FindMatchingEvent(release, monitoredEvents, releaseMatchingService, config.EnableMultiPartEpisodes);
+                var matchedEvent = FindMatchingEvent(release, monitoredEvents, releaseMatchingService, config.EnableMultiPartEpisodes, earlyReleaseLimits);
 
                 if (matchedEvent == null)
                     continue;
@@ -293,7 +297,8 @@ public class RssSyncService : BackgroundService
         ReleaseSearchResult release,
         List<Event> monitoredEvents,
         ReleaseMatchingService matchingService,
-        bool enableMultiPartEpisodes)
+        bool enableMultiPartEpisodes,
+        IReadOnlyDictionary<int, int?> earlyReleaseLimits)
     {
         var releaseTitle = release.Title.ToLowerInvariant();
         Event? bestMatch = null;
@@ -308,6 +313,7 @@ public class RssSyncService : BackgroundService
         // ValidateRelease's use sites so sharing it across iterations is
         // safe.
         var preParsed = matchingService.ParseRelease(release.Title);
+        var earlyLimit = ReleaseMatchingService.ResolveEarlyReleaseLimit(release, earlyReleaseLimits);
 
         foreach (var evt in monitoredEvents)
         {
@@ -316,7 +322,8 @@ public class RssSyncService : BackgroundService
             if (!eventKeywords.Any(kw => releaseTitle.Contains(kw)))
                 continue;
 
-            var matchResult = matchingService.ValidateRelease(release, evt, null, enableMultiPartEpisodes, preParsed);
+            var matchResult = matchingService.ValidateRelease(release, evt, null, enableMultiPartEpisodes, preParsed,
+                earlyReleaseLimitDays: earlyLimit);
             if (!matchResult.IsMatch || matchResult.IsHardRejection)
                 continue;
 

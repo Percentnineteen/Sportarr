@@ -40,14 +40,55 @@ export default function TaskQueueFooter() {
     }
   };
 
-  // Filter to show only active/recent tasks
-  const activeTasks = tasks.filter(t =>
-    t.status === 'Running' ||
-    t.status === 'Queued' ||
-    t.status === 'Aborting' ||
-    (t.status === 'Completed' && new Date(t.ended!).getTime() > Date.now() - 10000) || // Show completed for 10s
-    (t.status === 'Failed' && new Date(t.ended!).getTime() > Date.now() - 30000) // Show failed for 30s
-  );
+  // Filter to show only active/recent tasks, then sort so the
+  // single-task display slot prioritises tasks that are actually
+  // working over ones just sitting in the queue. Without this, a
+  // freshly-queued task could land at index 0 from the API and
+  // visually "take over" the slot even though another task was
+  // still actively running — confusing because it looked like the
+  // new task had replaced the running one instead of joining the
+  // back of the queue.
+  //
+  // Order:
+  //   1. Running (oldest first — show whichever task has been
+  //      working longest so a long-running refresh stays visible)
+  //   2. Aborting (transitional, treat like Running for UX)
+  //   3. Queued (oldest first — FIFO matches how the backend will
+  //      promote them once the slot opens up)
+  //   4. Recently-completed / failed (newest first, brief)
+  const statusOrder: Record<string, number> = {
+    Running: 0,
+    Aborting: 1,
+    Queued: 2,
+    Completed: 3,
+    Failed: 4,
+    Cancelled: 5,
+  };
+
+  const activeTasks = tasks
+    .filter(t =>
+      t.status === 'Running' ||
+      t.status === 'Queued' ||
+      t.status === 'Aborting' ||
+      (t.status === 'Completed' && new Date(t.ended!).getTime() > Date.now() - 10000) ||
+      (t.status === 'Failed' && new Date(t.ended!).getTime() > Date.now() - 30000)
+    )
+    .sort((a, b) => {
+      const so = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
+      if (so !== 0) return so;
+      // Within the same status, pick the one that's been around
+      // longest. For Running/Aborting that's the oldest `started`;
+      // for Queued that's the oldest `queued`; for terminal states
+      // newer-first is friendlier (most recent finish on top).
+      if (a.status === 'Running' || a.status === 'Aborting') {
+        return new Date(a.started ?? a.queued).getTime() - new Date(b.started ?? b.queued).getTime();
+      }
+      if (a.status === 'Queued') {
+        return new Date(a.queued).getTime() - new Date(b.queued).getTime();
+      }
+      // Completed / Failed — newest first
+      return new Date(b.ended ?? b.queued).getTime() - new Date(a.ended ?? a.queued).getTime();
+    });
 
   const hasActiveTasks = activeTasks.length > 0;
 

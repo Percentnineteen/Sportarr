@@ -398,14 +398,35 @@ public class LeagueEventSyncService
             // doesn't know about half my season" is almost always a
             // sync regression on the upstream side, not legitimate
             // mass cancellation.
+            //
+            // Escape hatch: when the API clearly returned a healthy
+            // response (>= HEALTHY_API_THRESHOLD events for this season),
+            // we trust it as authoritative even when the orphan ratio is
+            // high. The original guard couldn't distinguish "upstream
+            // legitimately deduped" (sportarr-hub's May 2026 dedup pass
+            // removed ~2,900 duplicate MLB rows in one go) from "upstream
+            // is broken" (returned a sparse response). The threshold
+            // catches the broken case (< 100 events = clearly not a
+            // working MLB / NBA / NHL response) while letting the
+            // legitimate-dedup case proceed.
+            const int healthyApiThreshold = 100;
+            if (localEventsForSeason.Count > 0 &&
+                orphanedEvents.Count > localEventsForSeason.Count / 2 &&
+                orphanedEvents.Count >= 20 &&
+                events.Count < healthyApiThreshold)
+            {
+                _logger.LogWarning(
+                    "[League Event Sync] Season {Season}: {Orphaned}/{Local} local events appear orphaned ({ApiCount} API ids returned only {EventCount} events). Refusing cleanup — API response looks unhealthy. Investigate the upstream response before retrying.",
+                    season, orphanedEvents.Count, localEventsForSeason.Count, apiExternalIds.Count, events.Count);
+                continue;
+            }
             if (localEventsForSeason.Count > 0 &&
                 orphanedEvents.Count > localEventsForSeason.Count / 2 &&
                 orphanedEvents.Count >= 20)
             {
-                _logger.LogWarning(
-                    "[League Event Sync] Season {Season}: {Orphaned}/{Local} local events appear orphaned ({ApiCount} API ids). Refusing cleanup — too large a delete to be legitimate cancellations. Investigate the upstream response before retrying.",
-                    season, orphanedEvents.Count, localEventsForSeason.Count, apiExternalIds.Count);
-                continue;
+                _logger.LogInformation(
+                    "[League Event Sync] Season {Season}: {Orphaned}/{Local} local events orphaned ({ApiCount} API ids returned {EventCount} events). API response is healthy (>= {Threshold} events), proceeding with cleanup -- treating upstream as authoritative.",
+                    season, orphanedEvents.Count, localEventsForSeason.Count, apiExternalIds.Count, events.Count, healthyApiThreshold);
             }
 
             if (orphanedEvents.Any())
@@ -1262,20 +1283,56 @@ public class LeagueEventSyncService
             return apiEpisodeNumber;
         }
 
-        // Fall back to local calculation (for events not in API, or if API fetch failed)
-        // Note: This uses a synchronous count since we're in a non-async context
-        // For new events without API data, use a simple sequential number based on existing count
+        // Fall back to local calculation (for events not in API, or if API
+        // fetch failed). The previous version counted rows with
+        // `(EventDate < eventDate || (EventDate == eventDate && Compare(ExternalId) < 0))`,
+        // but when the incoming event's externalId is null OR many same-date
+        // events share an identical (date, externalId) tuple at midnight
+        // (date-only parse with no time), the inner branch was never true and
+        // every collision-set event got the same `existingCount + 1` number.
+        // Visible symptom: every game on 2026-09-05 + 2026-09-06 in the MLB
+        // league page rendered as S2026E4045.
+        //
+        // Fix: pull the existing IDs in (EventDate, ExternalId, Id) order and
+        // find the deterministic position the incoming event would occupy.
+        // Id (the local PK) is the final tiebreaker so even rows with NULL
+        // ExternalId get a unique slot. Cheap on a single season since the
+        // dataset is at most a few thousand rows.
         if (string.IsNullOrEmpty(season))
             return 1;
 
-        var existingCount = _db.Events
-            .Where(e => e.LeagueId == leagueId && e.Season == season &&
-                       (e.EventDate < eventDate ||
-                        (e.EventDate == eventDate && externalId != null &&
-                         string.Compare(e.ExternalId, externalId) < 0)))
-            .Count();
+        var seasonEventKeys = _db.Events
+            .Where(e => e.LeagueId == leagueId && e.Season == season)
+            .OrderBy(e => e.EventDate)
+            .ThenBy(e => e.ExternalId)
+            .ThenBy(e => e.Id)
+            .Select(e => new { e.EventDate, e.ExternalId, e.Id })
+            .ToList();
 
-        var localEpisodeNumber = existingCount + 1;
+        int position = 0;
+        foreach (var k in seasonEventKeys)
+        {
+            if (k.EventDate < eventDate)
+            {
+                position++;
+                continue;
+            }
+            if (k.EventDate > eventDate)
+                break;
+            // Same EventDate -- compare ExternalId, then fall back so each row
+            // still gets a unique slot when externalId is null on either side.
+            var cmp = string.Compare(k.ExternalId ?? string.Empty, externalId ?? string.Empty, StringComparison.Ordinal);
+            if (cmp < 0)
+            {
+                position++;
+                continue;
+            }
+            // cmp == 0 (same externalId, including both null) or cmp > 0:
+            // the incoming event lands here or earlier.
+            break;
+        }
+
+        var localEpisodeNumber = position + 1;
         _logger.LogDebug("[League Event Sync] Using local episode number E{EpisodeNumber} for event {ExternalId} (API data not available)",
             localEpisodeNumber, externalId);
         return localEpisodeNumber;

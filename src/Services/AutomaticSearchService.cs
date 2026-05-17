@@ -541,12 +541,19 @@ public class AutomaticSearchService : IAutomaticSearchService
             // DATE/EVENT VALIDATION: Apply ReleaseMatchingService validation to filter out wrong dates
             // This catches releases like NBA.2024.03.12... when searching for a June 2025 event
             // The validation uses SportsFileNameParser to extract dates and hard-rejects mismatches >30 days
+            var earlyReleaseLimits = await _db.Indexers
+                .Where(i => i.EarlyReleaseLimit.HasValue)
+                .Select(i => new { i.Id, i.EarlyReleaseLimit })
+                .ToDictionaryAsync(i => i.Id, i => i.EarlyReleaseLimit);
+
             var validatedReleases = new List<ReleaseSearchResult>();
             var dateRejectionCount = 0;
 
             foreach (var release in approvedReleases)
             {
-                var matchResult = _releaseMatchingService.ValidateRelease(release, evt, part, config.EnableMultiPartEpisodes);
+                var earlyLimit = ReleaseMatchingService.ResolveEarlyReleaseLimit(release, earlyReleaseLimits);
+                var matchResult = _releaseMatchingService.ValidateRelease(release, evt, part, config.EnableMultiPartEpisodes,
+                    earlyReleaseLimitDays: earlyLimit);
 
                 if (matchResult.IsHardRejection)
                 {

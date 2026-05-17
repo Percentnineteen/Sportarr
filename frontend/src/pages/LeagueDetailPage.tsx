@@ -246,6 +246,14 @@ export default function LeagueDetailPage() {
 
   // Track which seasons are expanded (default: none - user manually expands)
   const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set());
+
+  // Toggle for showing cancelled / postponed events in the season list.
+  // Default off because for the typical admin a cancelled game is noise -- it
+  // never broadcasts, there's nothing to record, and including it inflates
+  // the per-season visual scope without giving the admin anything to act on.
+  // Owners who actually want to audit cancellations flip the toggle and the
+  // list re-renders to include them, badged distinctly.
+  const [showCancelled, setShowCancelled] = useState(false);
   const [dvrChannelSearch, setDvrChannelSearch] = useState('');
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [isDescClamped, setIsDescClamped] = useState(false);
@@ -1049,8 +1057,18 @@ export default function LeagueDetailPage() {
     );
   }
 
-  // Group events by season
+  // Group events by season. Cancelled / postponed events are filtered out
+  // when the showCancelled toggle is off (default). The hub already excludes
+  // cancelled rows from the Plex episode-number sequence so the numbering
+  // stays correct whether the toggle is on or off -- this filter only
+  // controls the visual list.
+  const isHiddenStatus = (status: string | null | undefined): boolean => {
+    if (showCancelled) return false;
+    const s = (status || '').toUpperCase();
+    return s === 'CANCELLED' || s === 'CANCELED' || s === 'POSTPONED';
+  };
   const groupedEvents = (events || []).reduce((acc, event) => {
+    if (isHiddenStatus(event.status)) return acc;
     const season = event.season || 'Unknown';
     if (!acc[season]) {
       acc[season] = [];
@@ -1478,6 +1496,31 @@ export default function LeagueDetailPage() {
             <p className="text-gray-400 text-xs md:text-sm mt-1">
               {Array.isArray(events) ? events.length : 0} event{Array.isArray(events) && events.length !== 1 ? 's' : ''} in this league
             </p>
+
+            {/* Show-cancelled toggle. Hidden by default because cancelled
+                / postponed games are noise for the day-to-day admin --
+                they never broadcast, nothing to record. Flip on to audit. */}
+            {(() => {
+              const hiddenCount = (events || []).filter(e => {
+                const s = (e.status || '').toUpperCase();
+                return s === 'CANCELLED' || s === 'CANCELED' || s === 'POSTPONED';
+              }).length;
+              if (hiddenCount === 0) return null;
+              return (
+                <label className="inline-flex items-center gap-2 mt-2 text-xs text-gray-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showCancelled}
+                    onChange={(e) => setShowCancelled(e.target.checked)}
+                    className="rounded text-red-600 focus:ring-red-500 bg-gray-800 border-gray-600"
+                  />
+                  Show cancelled / postponed
+                  <span className="text-gray-500">
+                    ({hiddenCount} hidden)
+                  </span>
+                </label>
+              );
+            })()}
           </div>
 
           {eventsLoading ? (
@@ -1760,6 +1803,12 @@ export default function LeagueDetailPage() {
                             const now = new Date();
                             const isPastEvent = eventDate < now;
                             const status = event.status?.toUpperCase();
+                            // 'cancelled' / 'postponed' get their own badge -- the previous
+                            // `isNotStarted = !isCompleted && !isLive` fallback was rendering
+                            // them as "Not Started", which is misleading: a cancelled game
+                            // never happens.
+                            const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
+                            const isPostponed = status === 'POSTPONED';
                             const isCompleted = hasFile || status === 'FT' || status === 'COMPLETED' || status === 'MATCH FINISHED' || (isPastEvent && (!status || status === 'NS' || status === 'NOT STARTED'));
                             const isLive = status === 'LIVE';
                             const hasParts = config?.enableMultiPartEpisodes && isFightingSport(event.sport) && eventHasMultiPart(event);
@@ -1840,6 +1889,10 @@ export default function LeagueDetailPage() {
                                         <FilmIcon className="w-3 h-3" />
                                         {event.files && event.files.length > 1 ? `${event.files.length} Files` : 'Downloaded'}
                                       </button>
+                                    ) : isCancelled ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-red-600/20 text-red-400 text-xs line-through" title="This event was cancelled and will not occur.">Cancelled</span>
+                                    ) : isPostponed ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-yellow-600/20 text-yellow-400 text-xs" title="This event has been postponed.">Postponed</span>
                                     ) : !hasParts ? (
                                       <EventStatusBadge
                                         eventId={event.id}
@@ -2136,12 +2189,26 @@ export default function LeagueDetailPage() {
                             const now = new Date();
                             const isPast = eventDate < now;
                             const status = event.status?.toUpperCase();
+                            const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
+                            const isPostponed = status === 'POSTPONED';
                             // Event is completed if: has file, OR explicit completed status, OR past date with unstarted/no status
                             const isCompleted = event.hasFile || status === 'FT' || status === 'COMPLETED' || status === 'MATCH FINISHED' || (isPast && (!status || status === 'NS' || status === 'NOT STARTED'));
                             const isLive = status === 'LIVE';
-                            const isNotStarted = !isCompleted && !isLive;
+                            const isNotStarted = !isCompleted && !isLive && !isCancelled && !isPostponed;
 
-                            if (isCompleted) {
+                            if (isCancelled) {
+                              return (
+                                <span className="px-2 py-0.5 rounded bg-red-600/20 text-red-400 line-through" title="Cancelled — this event will not occur.">
+                                  Cancelled
+                                </span>
+                              );
+                            } else if (isPostponed) {
+                              return (
+                                <span className="px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400" title="Postponed — event has been delayed.">
+                                  Postponed
+                                </span>
+                              );
+                            } else if (isCompleted) {
                               return (
                                 <span className="px-2 py-0.5 rounded bg-blue-600/20 text-blue-400">
                                   Completed

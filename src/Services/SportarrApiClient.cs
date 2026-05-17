@@ -976,13 +976,28 @@ public class SportarrApiClient
                 return null;
             }
 
-            // Build dictionary mapping ExternalId (event ID) to episode number
+            // Build dictionary mapping ExternalId -> episode number, keyed by
+            // BOTH the hub short_id (ep.Id, e.g. ev-482205) AND the TheSportsDB
+            // cross-reference (ep.TsdbId, e.g. 2392722). Local rows whose
+            // Event.ExternalId hasn't yet been migrated from the legacy
+            // TheSportsDB id to the short_id still match here on the tsdb
+            // entry, so episode numbering stays hub-authoritative regardless
+            // of which form the local DB carries. Without this, every
+            // unmigrated event fell through to the local-count fallback,
+            // which collided on date for events sharing a midnight timestamp
+            // (visible symptom: every September 5/6 MLB game rendered as
+            // S2026E4045 because they all shared the same `existingCount`).
             var episodeMap = new Dictionary<string, int>();
             foreach (var ep in result.Episodes)
             {
-                if (!string.IsNullOrEmpty(ep.Id) && ep.EpisodeNumber.HasValue)
+                if (!ep.EpisodeNumber.HasValue) continue;
+                if (!string.IsNullOrEmpty(ep.Id))
                 {
                     episodeMap[ep.Id] = ep.EpisodeNumber.Value;
+                }
+                if (!string.IsNullOrEmpty(ep.TsdbId))
+                {
+                    episodeMap[ep.TsdbId] = ep.EpisodeNumber.Value;
                 }
             }
 
@@ -1018,6 +1033,17 @@ public class PlexEpisode
 {
     [JsonPropertyName("id")]
     public string? Id { get; set; }
+
+    /// <summary>
+    /// TheSportsDB cross-reference of this episode. Hub emits both `id`
+    /// (the canonical short_id, ev-XXXXXX) and `tsdb_id` (the legacy
+    /// TheSportsDB id) per episode so consumers whose local rows still
+    /// reference one form or the other can match either way. Required
+    /// so the episode-number map covers events synced before the hub's
+    /// May 2026 short_id flip without falling back to local computation.
+    /// </summary>
+    [JsonPropertyName("tsdb_id")]
+    public string? TsdbId { get; set; }
 
     [JsonPropertyName("title")]
     public string? Title { get; set; }

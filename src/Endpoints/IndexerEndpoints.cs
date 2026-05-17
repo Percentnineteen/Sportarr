@@ -145,6 +145,13 @@ app.MapPost("/api/indexer", async (HttpRequest request, SportarrDbContext db, IL
                             indexer.SeedTime = seedTime;
                         }
                         break;
+                    case "earlyReleaseLimit":
+                        // Empty, 0, negative, or non-numeric all persist as null so the
+                        // matcher's opt-in check stays off. Only a positive int enables it.
+                        indexer.EarlyReleaseLimit = int.TryParse(fieldValue, out var earlyLimit) && earlyLimit > 0
+                            ? earlyLimit
+                            : null;
+                        break;
                     case "cookie":
                         indexer.Cookie = string.IsNullOrWhiteSpace(fieldValue) ? null : fieldValue;
                         break;
@@ -299,6 +306,13 @@ app.MapPut("/api/indexer/{id:int}", async (int id, HttpRequest request, Sportarr
                         {
                             indexer.SeedTime = seedTime;
                         }
+                        break;
+                    case "earlyReleaseLimit":
+                        // Empty, 0, negative, or non-numeric all persist as null so the
+                        // matcher's opt-in check stays off. Only a positive int enables it.
+                        indexer.EarlyReleaseLimit = int.TryParse(fieldValue, out var earlyLimitUpdate) && earlyLimitUpdate > 0
+                            ? earlyLimitUpdate
+                            : null;
                         break;
                     case "cookie":
                         indexer.Cookie = string.IsNullOrWhiteSpace(fieldValue) ? null : fieldValue;

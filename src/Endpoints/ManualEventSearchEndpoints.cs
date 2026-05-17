@@ -315,10 +315,17 @@ app.MapPost("/api/event/{eventId:int}/search", async (
     // DATE/EVENT VALIDATION: Apply ReleaseMatchingService to mark wrong dates
     // This validates team sports releases (NBA, NFL, etc.) have correct dates
     // Releases with dates >30 days off get hard rejected (won't be auto-grabbed)
+    var earlyReleaseLimits = await db.Indexers
+        .Where(i => i.EarlyReleaseLimit.HasValue)
+        .Select(i => new { i.Id, i.EarlyReleaseLimit })
+        .ToDictionaryAsync(i => i.Id, i => i.EarlyReleaseLimit);
+
     var dateRejectionCount = 0;
     foreach (var result in allResults)
     {
-        var matchResult = releaseMatchingService.ValidateRelease(result, evt, part, config.EnableMultiPartEpisodes);
+        var earlyLimit = ReleaseMatchingService.ResolveEarlyReleaseLimit(result, earlyReleaseLimits);
+        var matchResult = releaseMatchingService.ValidateRelease(result, evt, part, config.EnableMultiPartEpisodes,
+            earlyReleaseLimitDays: earlyLimit);
 
         if (matchResult.IsHardRejection)
         {

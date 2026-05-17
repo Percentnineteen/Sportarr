@@ -99,6 +99,11 @@ public class SeasonSearchService
 
         _logger.LogInformation("[Season Search] Found {Count} raw releases from indexers", allReleases.Count);
 
+        var earlyReleaseLimits = await _db.Indexers
+            .Where(i => i.EarlyReleaseLimit.HasValue)
+            .Select(i => new { i.Id, i.EarlyReleaseLimit })
+            .ToDictionaryAsync(i => i.Id, i => i.EarlyReleaseLimit);
+
         // Match releases to events
         var seasonReleases = new List<SeasonSearchRelease>();
         var seenGuids = new HashSet<string>();
@@ -115,6 +120,7 @@ public class SeasonSearchService
             // this, ValidateRelease re-parses the same string for every
             // event in the season.
             var preParsed = _releaseMatchingService.ParseRelease(release.Title);
+            var earlyLimit = ReleaseMatchingService.ResolveEarlyReleaseLimit(release, earlyReleaseLimits);
 
             // Try to match this release to one or more events
             var matchedEvents = new List<SeasonEventMatch>();
@@ -126,7 +132,8 @@ public class SeasonSearchService
                     evt,
                     requestedPart: null,
                     enableMultiPartEpisodes: enableMultiPart,
-                    preParsed: preParsed);
+                    preParsed: preParsed,
+                    earlyReleaseLimitDays: earlyLimit);
 
                 if (matchResult.IsMatch)
                 {

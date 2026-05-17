@@ -452,9 +452,13 @@ export default function IndexersSettings() {
     if (indexer.seasonPackSeedTime !== undefined) {
       fields.push({ name: 'seasonPackSeedTime', value: String(indexer.seasonPackSeedTime) });
     }
-    if (indexer.earlyReleaseLimit !== undefined) {
-      fields.push({ name: 'earlyReleaseLimit', value: String(indexer.earlyReleaseLimit) });
-    }
+    // Always send earlyReleaseLimit so the backend can clear it when the
+    // user empties the field. Other optional ints aren't user-clearable
+    // through this form, so they keep the omit-when-undefined pattern.
+    fields.push({
+      name: 'earlyReleaseLimit',
+      value: indexer.earlyReleaseLimit !== undefined ? String(indexer.earlyReleaseLimit) : '',
+    });
     if (indexer.additionalParameters) {
       fields.push({ name: 'additionalParameters', value: indexer.additionalParameters });
     }
@@ -986,13 +990,21 @@ export default function IndexersSettings() {
               <label className="block text-sm font-medium text-gray-300 mb-2">Early Release Limit</label>
               <input
                 type="number"
-                value={formData.earlyReleaseLimit || 0}
-                onChange={(e) => handleFormChange('earlyReleaseLimit', parseInt(e.target.value))}
+                value={formData.earlyReleaseLimit ?? ''}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') {
+                    handleFormChange('earlyReleaseLimit', undefined);
+                  } else {
+                    const parsed = parseInt(raw, 10);
+                    handleFormChange('earlyReleaseLimit', Number.isNaN(parsed) ? undefined : parsed);
+                  }
+                }}
                 min="0"
                 className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
               />
               <p className="text-xs text-gray-500 mt-1">
-                How many days before an event can be grabbed. 0 = disabled
+                Reject releases posted more than this many days before the event aired. Leave blank or 0 to disable.
               </p>
             </div>
 
