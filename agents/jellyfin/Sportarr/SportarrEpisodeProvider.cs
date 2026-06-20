@@ -33,7 +33,9 @@ namespace Jellyfin.Plugin.Sportarr
 
         public int Order => 0;
 
-        private string ApiUrl => SportarrPlugin.Instance?.Configuration.SportarrApiUrl ?? "https://sportarr.net";
+        // Trim trailing slashes so a configured URL like "http://host:1867/"
+        // doesn't build "http://host:1867//api/..." (the double slash fails to route).
+        private string ApiUrl => (SportarrPlugin.Instance?.Configuration.SportarrApiUrl ?? "https://sportarr.net").TrimEnd('/');
 
         /// <summary>
         /// Search for episodes (not typically used - episodes are matched by season/episode number).

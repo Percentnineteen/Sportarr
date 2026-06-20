@@ -426,8 +426,16 @@ public class DownloadClientService : IDownloadClientService
             {
                 DownloadClientType.QBittorrent => await ChangeCategoryQBittorrentAsync(config, downloadId, category),
                 DownloadClientType.Decypharr => await ChangeCategoryDecypharrAsync(config, downloadId, category),
-                // DecypharrUsenet uses SABnzbd API which doesn't support category changes
-                // Other clients may not support category changes
+                // Deluge moves the torrent to a label (its category equivalent),
+                // creating the label first if needed.
+                DownloadClientType.Deluge => await ChangeCategoryDelugeAsync(config, downloadId, category),
+                // rTorrent uses the free-form custom1 label (no create step).
+                DownloadClientType.RTorrent => await ChangeCategoryRTorrentAsync(config, downloadId, category),
+                // Transmission (and Vuze, which speaks the Transmission RPC) uses
+                // per-torrent labels (3.0+); older daemons ignore the field.
+                DownloadClientType.Transmission => await ChangeCategoryTransmissionAsync(config, downloadId, category),
+                // Usenet clients (SABnzbd/NZBGet/DecypharrUsenet/NZBdav) use
+                // server-defined categories and don't support a post-import move.
                 _ => false
             };
 
@@ -592,7 +600,38 @@ public class DownloadClientService : IDownloadClientService
     private async Task<string?> AddToTransmissionAsync(DownloadClient config, string url, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
     {
         var client = GetTransmissionClient(config);
-        return await client.AddTorrentAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes);
+
+        // Magnets go straight to Transmission via 'filename' — it resolves them
+        // itself and torrent-add returns immediately.
+        if (TorrentHashHelper.IsMagnet(url))
+        {
+            return await client.AddTorrentAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes);
+        }
+
+        // For an HTTP .torrent link, resolve it here rather than handing the URL
+        // to Transmission. Two reasons:
+        //   1. If Transmission fetches the URL itself it does so *inside*
+        //      torrent-add, blocking the RPC until the fetch finishes — slow,
+        //      IP-scoped, or one-time-use indexer/proxy links make that hang
+        //      until the RPC times out.
+        //   2. Magnet-only public indexers proxied through Prowlarr answer the
+        //      download URL with a 301 redirect to a magnet: URI. Transmission's
+        //      libcurl can't follow a cross-scheme redirect to magnet:, so it
+        //      stalls. TorrentFileResolver follows redirects manually and hands
+        //      back the magnet, which we then add via 'filename'.
+        var resolved = await TorrentFileResolver.ResolveAsync(url, config.DisableSslCertificateValidation, _logger);
+        if (!resolved.IsSuccess)
+        {
+            _logger.LogError("[Download Client] Failed to resolve torrent for Transmission from {Url}: {Error}", url, resolved.ErrorMessage);
+            return null;
+        }
+
+        if (resolved.IsMagnetRedirect)
+        {
+            return await client.AddTorrentAsync(config, resolved.MagnetLink!, category, seedRatioLimit, seedTimeLimitMinutes);
+        }
+
+        return await client.AddTorrentFromMetainfoAsync(config, resolved.TorrentData!, category, seedRatioLimit, seedTimeLimitMinutes);
     }
 
     private async Task<string?> AddToDelugeAsync(DownloadClient config, string url, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
@@ -624,21 +663,32 @@ public class DownloadClientService : IDownloadClientService
             return await client.AddTorrentWithHashAsync(config, torrentBytes: null, magnetUrl: url, knownHash: magnetHash, category: category);
         }
 
-        // .torrent URL: fetch the bytes once and send them to rTorrent (load.raw_start), so the
-        // indexer URL isn't fetched twice (some trackers issue one-time download tokens).
-        byte[] torrentBytes;
-        try
+        // .torrent URL: resolve it here (one fetch — some trackers issue
+        // one-time download tokens) following redirects manually so a magnet
+        // redirect from a magnet-only indexer is caught instead of failing.
+        var resolved = await TorrentFileResolver.ResolveAsync(url, config.DisableSslCertificateValidation, _logger);
+        if (!resolved.IsSuccess)
         {
-            var http = CreateHttpClient(config.DisableSslCertificateValidation);
-            torrentBytes = await http.GetByteArrayAsync(url);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[Download Client] Failed to fetch .torrent file for rTorrent from {Url}", url);
+            _logger.LogError("[Download Client] Failed to resolve torrent for rTorrent from {Url}: {Error}", url, resolved.ErrorMessage);
             return null;
         }
 
-        var hash = TorrentHashHelper.TryGetHashFromTorrentBytes(torrentBytes);
+        // The link redirected to a magnet — add it as a magnet instead of bytes.
+        if (resolved.IsMagnetRedirect)
+        {
+            var redirectHash = TorrentHashHelper.TryGetHashFromMagnet(resolved.MagnetLink!);
+            if (string.IsNullOrEmpty(redirectHash))
+            {
+                _logger.LogError(
+                    "[Download Client] Could not parse a v1 infohash from the redirected magnet link; refusing to add to rTorrent to avoid tracking the wrong torrent: {Url}",
+                    url);
+                return null;
+            }
+
+            return await client.AddTorrentWithHashAsync(config, torrentBytes: null, magnetUrl: resolved.MagnetLink!, knownHash: redirectHash, category: category);
+        }
+
+        var hash = TorrentHashHelper.TryGetHashFromTorrentBytes(resolved.TorrentData!);
         if (string.IsNullOrEmpty(hash))
         {
             _logger.LogError(
@@ -647,7 +697,7 @@ public class DownloadClientService : IDownloadClientService
             return null;
         }
 
-        return await client.AddTorrentWithHashAsync(config, torrentBytes, magnetUrl: null, knownHash: hash, category: category);
+        return await client.AddTorrentWithHashAsync(config, resolved.TorrentData!, magnetUrl: null, knownHash: hash, category: category);
     }
 
     private async Task<string?> AddToSabnzbdAsync(DownloadClient config, string url, string category)
@@ -840,6 +890,24 @@ public class DownloadClientService : IDownloadClientService
     private async Task<bool> ChangeCategoryQBittorrentAsync(DownloadClient config, string downloadId, string category)
     {
         var client = GetQBittorrentClient(config);
+        return await client.SetCategoryAsync(config, downloadId, category);
+    }
+
+    private async Task<bool> ChangeCategoryDelugeAsync(DownloadClient config, string downloadId, string category)
+    {
+        var client = GetDelugeClient(config);
+        return await client.SetCategoryAsync(config, downloadId, category);
+    }
+
+    private async Task<bool> ChangeCategoryRTorrentAsync(DownloadClient config, string downloadId, string category)
+    {
+        var client = GetRTorrentClient(config);
+        return await client.SetCategoryAsync(config, downloadId, category);
+    }
+
+    private async Task<bool> ChangeCategoryTransmissionAsync(DownloadClient config, string downloadId, string category)
+    {
+        var client = GetTransmissionClient(config);
         return await client.SetCategoryAsync(config, downloadId, category);
     }
 

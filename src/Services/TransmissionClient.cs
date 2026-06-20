@@ -90,10 +90,32 @@ public class TransmissionClient
     }
 
     /// <summary>
-    /// Add torrent from URL.
-    /// NOTE: Does NOT specify download-dir — Transmission uses its own configured directory.
+    /// Add a torrent by handing Transmission a source string via the 'filename'
+    /// argument — a magnet link or a path/URL Transmission can resolve itself.
+    /// Prefer <see cref="AddTorrentFromMetainfoAsync"/> for HTTP .torrent links:
+    /// passing such a URL makes Transmission fetch it during torrent-add, which
+    /// blocks the RPC call until the fetch completes and trips the RPC timeout
+    /// when the indexer/proxy link is slow or expects the request to originate
+    /// from Sportarr.
+    /// NOTE: Does NOT specify download-dir unless overridden — Transmission uses
+    /// its own configured directory.
     /// </summary>
-    public async Task<string?> AddTorrentAsync(DownloadClient config, string torrentUrl, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
+    public Task<string?> AddTorrentAsync(DownloadClient config, string torrentUrl, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
+        => AddTorrentCoreAsync(config, "filename", torrentUrl, seedRatioLimit, seedTimeLimitMinutes);
+
+    /// <summary>
+    /// Add a torrent from already-fetched .torrent file bytes via the 'metainfo'
+    /// argument (base64). Sportarr fetches the file itself and sends the content
+    /// so Transmission never has to reach the indexer during torrent-add.
+    /// </summary>
+    public Task<string?> AddTorrentFromMetainfoAsync(DownloadClient config, byte[] torrentBytes, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
+        => AddTorrentCoreAsync(config, "metainfo", Convert.ToBase64String(torrentBytes), seedRatioLimit, seedTimeLimitMinutes);
+
+    /// <summary>
+    /// Shared torrent-add implementation. <paramref name="sourceKey"/> is either
+    /// "filename" (magnet/URL/path) or "metainfo" (base64 .torrent bytes).
+    /// </summary>
+    private async Task<string?> AddTorrentCoreAsync(DownloadClient config, string sourceKey, string sourceValue, double? seedRatioLimit, int? seedTimeLimitMinutes)
     {
         try
         {
@@ -108,15 +130,16 @@ public class TransmissionClient
             {
                 _logger.LogInformation("[Transmission] Adding torrent in STOPPED state (InitialState=Stopped)");
             }
-            object arguments;
+
+            var arguments = new Dictionary<string, object>
+            {
+                [sourceKey] = sourceValue,
+                ["paused"] = shouldPause
+            };
             if (!string.IsNullOrWhiteSpace(config.Directory))
             {
-                arguments = new { filename = torrentUrl, paused = shouldPause, download_dir = config.Directory };
+                arguments["download_dir"] = config.Directory;
                 _logger.LogInformation("[Transmission] Using directory override: {Directory}", config.Directory);
-            }
-            else
-            {
-                arguments = new { filename = torrentUrl, paused = shouldPause };
             }
 
             var response = await SendRpcRequestAsync(config, "torrent-add", arguments);
@@ -125,7 +148,12 @@ public class TransmissionClient
             {
                 var doc = JsonDocument.Parse(response);
                 if (doc.RootElement.TryGetProperty("arguments", out var args) &&
-                    args.TryGetProperty("torrent-added", out var torrent) &&
+                    // torrent-added on a fresh add; torrent-duplicate when the
+                    // torrent is already in the client (re-grab / retry). Both
+                    // carry the hashString and mean "it's there" — treat alike
+                    // instead of reporting a false failure on duplicates.
+                    (args.TryGetProperty("torrent-added", out var torrent) ||
+                     args.TryGetProperty("torrent-duplicate", out torrent)) &&
                     torrent.TryGetProperty("hashString", out var hash))
                 {
                     var hashString = hash.GetString();
@@ -154,6 +182,42 @@ public class TransmissionClient
         {
             _logger.LogError(ex, "[Transmission] Error adding torrent");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Move a torrent to a category (the post-import category move). Transmission
+    /// has no qBittorrent-style category, so this uses per-torrent labels
+    /// (Transmission 3.0+); an empty category clears the labels. Older daemons
+    /// (and some Vuze builds) without label support ignore the field harmlessly.
+    /// </summary>
+    public async Task<bool> SetCategoryAsync(DownloadClient config, string hash, string category)
+    {
+        try
+        {
+            ConfigureClient(config);
+
+            var torrents = await GetTorrentsAsync(config);
+            var torrent = torrents?.FirstOrDefault(t => t.HashString.Equals(hash, StringComparison.OrdinalIgnoreCase));
+            if (torrent == null)
+            {
+                _logger.LogWarning("[Transmission] Torrent {Hash} not found - cannot set category '{Category}'", hash, category);
+                return false;
+            }
+
+            var setArgs = new Dictionary<string, object>
+            {
+                ["ids"] = new[] { torrent.Id },
+                ["labels"] = string.IsNullOrWhiteSpace(category) ? Array.Empty<string>() : new[] { category }
+            };
+
+            var response = await SendRpcRequestAsync(config, "torrent-set", setArgs);
+            return response != null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Transmission] Error setting category '{Category}' on torrent {Hash}", category, hash);
+            return false;
         }
     }
 

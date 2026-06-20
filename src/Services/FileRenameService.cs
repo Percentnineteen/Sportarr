@@ -223,6 +223,7 @@ public class FileRenameService
             return 0;
         }
 
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
         int renamedCount = 0;
 
         foreach (var file in evt.Files)
@@ -242,7 +243,7 @@ public class FileRenameService
 
             try
             {
-                var renamed = await RenameFileAsync(evt, file, settings);
+                var renamed = await RenameFileAsync(evt, file, settings, rootFolders);
                 if (renamed)
                     renamedCount++;
             }
@@ -264,10 +265,10 @@ public class FileRenameService
     /// Rename and/or move a single file based on current event metadata and naming settings.
     /// Folder reorganization only happens if ReorganizeFolders setting is enabled.
     /// </summary>
-    private Task<bool> RenameFileAsync(Event evt, EventFile file, MediaManagementSettings settings)
+    private Task<bool> RenameFileAsync(Event evt, EventFile file, MediaManagementSettings settings, List<RootFolder> rootFolders)
     {
         var currentPath = file.FilePath;
-        var expectedPath = BuildExpectedPath(evt, file, settings);
+        var expectedPath = BuildExpectedPath(evt, file, settings, rootFolders);
 
         if (string.IsNullOrEmpty(expectedPath))
         {
@@ -314,7 +315,7 @@ public class FileRenameService
             if (settings.DeleteEmptyFolders && !string.IsNullOrEmpty(currentDir) &&
                 !string.Equals(currentDir, expectedDir, StringComparison.OrdinalIgnoreCase))
             {
-                TryDeleteEmptyDirectories(currentDir, FindRootFolder(currentPath, settings.RootFolders));
+                TryDeleteEmptyDirectories(currentDir, FindRootFolder(currentPath, rootFolders));
             }
 
             _logger.LogInformation("[File Rename] Successfully moved file for event '{Title}'", evt.Title);
@@ -332,7 +333,7 @@ public class FileRenameService
     /// Compute the path a file should have given the current event metadata and naming
     /// settings. Returns null if the target can't be determined. Does not touch disk.
     /// </summary>
-    private string? BuildExpectedPath(Event evt, EventFile file, MediaManagementSettings settings)
+    private string? BuildExpectedPath(Event evt, EventFile file, MediaManagementSettings settings, List<RootFolder> rootFolders)
     {
         var currentPath = file.FilePath;
         var currentDir = Path.GetDirectoryName(currentPath);
@@ -353,7 +354,7 @@ public class FileRenameService
         // Only reorganize folders if the setting is enabled; otherwise rename in place.
         if (settings.ReorganizeFolders)
         {
-            var rootFolder = FindRootFolder(currentPath, settings.RootFolders);
+            var rootFolder = FindRootFolder(currentPath, rootFolders);
             if (rootFolder != null)
             {
                 var folderPath = _fileNamingService.BuildFolderPath(settings, evt);
@@ -483,6 +484,8 @@ public class FileRenameService
             return 0;
         }
 
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
+
         var events = await _db.Events
             .Include(e => e.League)
             .Include(e => e.Files)
@@ -504,7 +507,7 @@ public class FileRenameService
                 if (!file.Exists || string.IsNullOrEmpty(file.FilePath) || !File.Exists(file.FilePath))
                     continue;
 
-                var expectedPath = BuildExpectedPath(evt, file, settings);
+                var expectedPath = BuildExpectedPath(evt, file, settings, rootFolders);
                 if (string.IsNullOrEmpty(expectedPath) ||
                     string.Equals(file.FilePath, expectedPath, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -585,6 +588,7 @@ public class FileRenameService
             return new List<FileRenamePreview>();
 
         var settings = await LoadMediaManagementSettingsAsync();
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
         var previews = new List<FileRenamePreview>();
 
         foreach (var file in evt.Files.Where(f => f.Exists && !string.IsNullOrEmpty(f.FilePath)))
@@ -607,7 +611,7 @@ public class FileRenameService
             // Check if we should reorganize folders (mirrors actual rename logic)
             if (settings.ReorganizeFolders)
             {
-                var rootFolder = FindRootFolder(currentPath, settings.RootFolders);
+                var rootFolder = FindRootFolder(currentPath, rootFolders);
                 if (rootFolder != null)
                 {
                     // Build expected folder path using current folder settings (league/season/event)
@@ -661,6 +665,7 @@ public class FileRenameService
             return new List<FileRenamePreview>();
 
         var settings = await LoadMediaManagementSettingsAsync();
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
         var previews = new List<FileRenamePreview>();
 
         foreach (var evt in events)
@@ -685,7 +690,7 @@ public class FileRenameService
                 // Check if we should reorganize folders (mirrors actual rename logic)
                 if (settings.ReorganizeFolders)
                 {
-                    var rootFolder = FindRootFolder(currentPath, settings.RootFolders);
+                    var rootFolder = FindRootFolder(currentPath, rootFolders);
                     if (rootFolder != null)
                     {
                         // Build expected folder path using current folder settings (league/season/event)
@@ -791,6 +796,7 @@ public class FileRenameService
         }
 
         var settings = await LoadMediaManagementSettingsAsync();
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
         var currentDir = Path.GetDirectoryName(currentPath);
         var extension = Path.GetExtension(currentPath);
 
@@ -798,7 +804,7 @@ public class FileRenameService
         var tokens = BuildFileNamingTokens(newEvent, file);
         var newFileName = _fileNamingService.BuildFileName(settings.StandardFileFormat, tokens, extension);
 
-        var rootFolder = FindRootFolder(currentPath, settings.RootFolders);
+        var rootFolder = FindRootFolder(currentPath, rootFolders);
         string newPath;
         if (rootFolder != null)
         {
@@ -893,26 +899,10 @@ public class FileRenameService
             };
         }
 
-        // IMPORTANT: Load root folders from separate RootFolders table
-        // The UI saves root folders to DbSet<RootFolder>, not to the JSON column in MediaManagementSettings
-        var rootFolders = await _db.RootFolders.ToListAsync();
-        if (rootFolders.Any())
-        {
-            // The persisted Accessible/FreeSpace/TotalSpace columns were
-            // dropped — recompute them live before downstream code reads
-            // them. DiskSpaceService handles Docker volume mapping correctly.
-            _diskSpaceService.RefreshLiveState(rootFolders);
-
-            settings.RootFolders = rootFolders;
-            _logger.LogDebug("[File Rename] Loaded {Count} root folders from database", rootFolders.Count);
-        }
-        else
-        {
-            _logger.LogWarning("[File Rename] No root folders configured");
-        }
-
-        _logger.LogDebug("[File Rename] Loaded settings: RenameEvents={RenameEvents}, ReorganizeFolders={Reorganize}, RootFolders={RootFolderCount}",
-            settings.RenameEvents, settings.ReorganizeFolders, settings.RootFolders?.Count ?? 0);
+        // Root folders live in the RootFolders table (loaded via RootFolderLoader
+        // by callers that need them), not in these settings.
+        _logger.LogDebug("[File Rename] Loaded settings: RenameEvents={RenameEvents}, ReorganizeFolders={Reorganize}",
+            settings.RenameEvents, settings.ReorganizeFolders);
 
         return settings;
     }

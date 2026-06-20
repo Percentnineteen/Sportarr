@@ -165,8 +165,9 @@ public class MediaManagementSettings
 {
     public int Id { get; set; }
 
-    // Root folders
-    public List<RootFolder> RootFolders { get; set; } = new();
+    // Root folders are NOT stored here — they live in their own RootFolders
+    // table (the single source of truth the UI writes to). Load them via
+    // RootFolderLoader where needed.
 
     // File Management
     public bool RenameEvents { get; set; } = false;

@@ -161,11 +161,41 @@ app.MapGet("/api/event/{eventId:int}/history", async (int eventId, string? part,
         })
         .ToListAsync();
 
+    // Get file-removal history (upgrades and manual deletions) so the timeline
+    // shows the full chain: grabbed -> imported -> deleted -> re-grabbed.
+    var fileHistoryQuery = db.EventFileHistory
+        .Where(h => h.EventId == eventId);
+
+    if (!string.IsNullOrEmpty(part))
+    {
+        fileHistoryQuery = fileHistoryQuery.Where(h => h.Part == part);
+    }
+
+    var fileHistory = await fileHistoryQuery
+        .OrderByDescending(h => h.Date)
+        .Select(h => new {
+            h.Id,
+            Type = "deleted",
+            SourcePath = h.SourceTitle,
+            DestinationPath = (string?)null,
+            h.Quality,
+            Size = (long?)null,
+            Decision = h.Type == EventFileHistoryType.DeletedForUpgrade ? "Deleted for upgrade" : "Deleted",
+            Warnings = new List<string>(),
+            Errors = !string.IsNullOrEmpty(h.Reason) ? new List<string> { h.Reason! } : new List<string>(),
+            Date = h.Date,
+            Indexer = (string?)null,
+            TorrentHash = (string?)null,
+            h.Part
+        })
+        .ToListAsync();
+
     // Combine and sort by date
     var allHistory = importHistory
         .Cast<object>()
         .Concat(blocklistHistory.Cast<object>())
         .Concat(queueHistory.Cast<object>())
+        .Concat(fileHistory.Cast<object>())
         .OrderByDescending(h => ((dynamic)h).Date)
         .ToList();
 

@@ -770,6 +770,38 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify EventFiles table: {ex.Message}");
         }
 
+        // Ensure EventFileHistory table exists (per-event timeline: file removals).
+        // Recent schema changes are applied here rather than via EF migrations.
+        try
+        {
+            var checkTableSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='EventFileHistory'";
+            var tableExists = db.Database.SqlQueryRaw<int>(checkTableSql).AsEnumerable().FirstOrDefault();
+
+            if (tableExists == 0)
+            {
+                Console.WriteLine("[Sportarr] EventFileHistory table missing - creating it now...");
+                db.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE ""EventFileHistory"" (
+                        ""Id"" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        ""EventId"" INTEGER NULL,
+                        ""Type"" INTEGER NOT NULL,
+                        ""SourceTitle"" TEXT NULL,
+                        ""Quality"" TEXT NULL,
+                        ""Reason"" TEXT NULL,
+                        ""Part"" TEXT NULL,
+                        ""Date"" TEXT NOT NULL,
+                        CONSTRAINT ""FK_EventFileHistory_Events_EventId"" FOREIGN KEY (""EventId"") REFERENCES ""Events"" (""Id"") ON DELETE SET NULL
+                    )");
+                db.Database.ExecuteSqlRaw(@"CREATE INDEX ""IX_EventFileHistory_EventId"" ON ""EventFileHistory"" (""EventId"")");
+                db.Database.ExecuteSqlRaw(@"CREATE INDEX ""IX_EventFileHistory_Date"" ON ""EventFileHistory"" (""Date"")");
+                Console.WriteLine("[Sportarr] EventFileHistory table created successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify EventFileHistory table: {ex.Message}");
+        }
+
         // Ensure PendingImports table exists (for external download detection feature)
         try
         {
@@ -917,6 +949,30 @@ public static class DatabaseInitializer
         catch (Exception ex)
         {
             Console.WriteLine($"[Sportarr] Warning: Could not verify EnableMultiPartEpisodes column: {ex.Message}");
+        }
+
+        // Drop the legacy MediaManagementSettings.RootFolders JSON column.
+        // Root folders now live solely in the RootFolders table (the source of
+        // truth the UI writes to). The JSON copy was a denormalized cache that
+        // only synced as a side effect of an import, so it went stale right
+        // after a folder was added and produced false "No root folders
+        // configured" errors. Requires SQLite 3.35+ (DROP COLUMN); the bundled
+        // Microsoft.Data.Sqlite engine satisfies that.
+        try
+        {
+            var checkRootFoldersCol = "SELECT COUNT(*) FROM pragma_table_info('MediaManagementSettings') WHERE name='RootFolders'";
+            var rootFoldersColExists = db.Database.SqlQueryRaw<int>(checkRootFoldersCol).AsEnumerable().FirstOrDefault();
+
+            if (rootFoldersColExists > 0)
+            {
+                Console.WriteLine("[Sportarr] Removing legacy MediaManagementSettings.RootFolders column (root folders now live in the RootFolders table)...");
+                db.Database.ExecuteSqlRaw(@"ALTER TABLE ""MediaManagementSettings"" DROP COLUMN ""RootFolders""");
+                Console.WriteLine("[Sportarr] MediaManagementSettings.RootFolders column removed");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not remove legacy MediaManagementSettings.RootFolders column: {ex.Message}");
         }
 
         // Ensure Events.BroadcastDate column exists.
@@ -1617,6 +1673,62 @@ public static class DatabaseInitializer
         catch (Exception ex)
         {
             Console.WriteLine($"[Sportarr] Warning: Could not clean up incomplete tasks: {ex.Message}");
+        }
+
+        // Recover downloads stranded in the "Importing" state.
+        // The import sets Status = Importing and commits it before moving the
+        // file; the terminal Imported (or Failed) status is only written once the
+        // import finishes. If the process is killed in between — a crash, or the
+        // user restarting the container/host mid-import — the row is left at
+        // Importing forever. Nothing in the monitor's poll loop transitions a row
+        // OUT of Importing, so the "Importing to library..." badge sticks for days
+        // and the activity count never drops. On boot, reconcile each stranded
+        // row: if the event already has a file on disk the import effectively
+        // finished, so mark it Imported; otherwise hand it back to the monitor as
+        // Completed so the (idempotent) import is retried.
+        try
+        {
+            var stuckImports = await db.DownloadQueue
+                .Where(d => d.Status == DownloadStatus.Importing)
+                .ToListAsync();
+
+            if (stuckImports.Count > 0)
+            {
+                Console.WriteLine($"[Sportarr] Found {stuckImports.Count} download(s) stranded in 'Importing' from a previous session - recovering...");
+                foreach (var item in stuckImports)
+                {
+                    var eventHasFile = await db.EventFiles.AnyAsync(f => f.EventId == item.EventId && f.Exists);
+                    if (eventHasFile)
+                    {
+                        item.Status = DownloadStatus.Imported;
+                        item.ImportedAt ??= DateTime.UtcNow;
+                    }
+                    else
+                    {
+                        item.Status = DownloadStatus.Completed;
+                    }
+                }
+                await db.SaveChangesAsync();
+                Console.WriteLine($"[Sportarr] Recovered {stuckImports.Count} stranded import(s)");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not recover stranded imports: {ex.Message}");
+        }
+
+        // Drop the retired Event Mapping tables. The feature (Sportarr-API powered
+        // release-name matching) was removed; these tables are no longer referenced
+        // by any model, service, or endpoint. SQLite DROP TABLE IF EXISTS is a no-op
+        // on databases that never had them.
+        try
+        {
+            db.Database.ExecuteSqlRaw(@"DROP TABLE IF EXISTS ""EventMappings""");
+            db.Database.ExecuteSqlRaw(@"DROP TABLE IF EXISTS ""SubmittedMappingRequests""");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not drop retired Event Mapping tables: {ex.Message}");
         }
     }
     Console.WriteLine("[Sportarr] Database migrations applied successfully");

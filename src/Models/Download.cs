@@ -848,6 +848,50 @@ public class GrabHistory
 }
 
 /// <summary>
+/// Type of file-lifecycle event recorded for an event's timeline. Grabs and
+/// imports are already tracked (GrabHistory / ImportHistory); this captures the
+/// removals those don't, so the per-event history shows the full chain
+/// (grabbed -> imported -> deleted -> re-grabbed) the way the other *arr apps do.
+/// </summary>
+public enum EventFileHistoryType
+{
+    /// <summary>The user deleted the file manually.</summary>
+    Deleted = 0,
+    /// <summary>The file was removed because a better release was imported over it.</summary>
+    DeletedForUpgrade = 1
+}
+
+/// <summary>
+/// Records a file removal for an event so it appears on the event's history
+/// timeline. Kept separate from GrabHistory/ImportHistory (which serve grab
+/// dedup and import records); the per-event history endpoint merges all three.
+/// </summary>
+public class EventFileHistory
+{
+    public int Id { get; set; }
+
+    /// <summary>Event this removal was for (null after the event is deleted).</summary>
+    public int? EventId { get; set; }
+    public Event? Event { get; set; }
+
+    public EventFileHistoryType Type { get; set; }
+
+    /// <summary>The removed file's path (or name) for display.</summary>
+    public string? SourceTitle { get; set; }
+
+    /// <summary>Quality of the removed file.</summary>
+    public string? Quality { get; set; }
+
+    /// <summary>Human-readable reason, e.g. "Upgraded to WEBDL-1080p" or "Deleted by user".</summary>
+    public string? Reason { get; set; }
+
+    /// <summary>Part name for multi-part events (null for single-file events).</summary>
+    public string? Part { get; set; }
+
+    public DateTime Date { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
 /// Cached release from RSS sync or search results.
 /// This is the core of the RSS-first search strategy:
 /// - RSS feeds are polled periodically and releases cached here

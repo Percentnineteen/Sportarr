@@ -58,8 +58,7 @@ public class LibraryRescanService
             StartedAt = DateTime.UtcNow,
         };
 
-        var settings = await _db.MediaManagementSettings.FirstOrDefaultAsync(ct);
-        var rootFolders = (settings?.RootFolders ?? new List<Models.RootFolder>())
+        var rootFolders = (await _db.RootFolders.ToListAsync(ct))
             .Where(rf => !string.IsNullOrEmpty(rf.Path))
             .Select(rf => rf.Path)
             .ToList();

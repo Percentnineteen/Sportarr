@@ -69,14 +69,14 @@ public class FileWatcherService : BackgroundService
             var db = scope.ServiceProvider.GetRequiredService<SportarrDbContext>();
             _recycleBinPath = (await scope.ServiceProvider.GetRequiredService<ConfigService>().GetConfigAsync()).RecycleBin;
 
-            var settings = await db.MediaManagementSettings.FirstOrDefaultAsync(cancellationToken);
-            if (settings?.RootFolders == null || settings.RootFolders.Count == 0)
+            var rootFolders = await db.RootFolders.ToListAsync(cancellationToken);
+            if (rootFolders.Count == 0)
             {
                 _logger.LogInformation("[File Watcher] No root folders configured, watching disabled");
                 return;
             }
 
-            foreach (var rootFolder in settings.RootFolders)
+            foreach (var rootFolder in rootFolders)
             {
                 if (!Directory.Exists(rootFolder.Path))
                 {
@@ -121,9 +121,8 @@ public class FileWatcherService : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<SportarrDbContext>();
         _recycleBinPath = (await scope.ServiceProvider.GetRequiredService<ConfigService>().GetConfigAsync()).RecycleBin;
 
-        var settings = await db.MediaManagementSettings.FirstOrDefaultAsync(cancellationToken);
-        var configuredPaths = settings?.RootFolders?.Select(r => r.Path).ToHashSet(StringComparer.OrdinalIgnoreCase)
-            ?? new HashSet<string>();
+        var configuredPaths = (await db.RootFolders.ToListAsync(cancellationToken))
+            .Select(r => r.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var watchedPaths = _watchers.Select(w => w.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
 

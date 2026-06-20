@@ -538,12 +538,22 @@ public class NzbGetClient
 
             if (historyItem != null)
             {
-                var status = historyItem.Status.ToLowerInvariant() switch
+                var status = MapHistoryStatus(historyItem.Status);
+
+                if (status == null)
                 {
-                    "success" or "success/all" or "success/par" => "completed",
-                    "failure" or "failure/par" or "failure/unpack" => "failed",
-                    _ => "completed"
-                };
+                    // DELETED/* in NZBGet history: the download was refused or removed
+                    // (DELETED/COPY and DELETED/DUPE = a duplicate NZBGet already had,
+                    // DELETED/MANUAL, DELETED/HEALTH, DELETED/GOOD, ...). There are no
+                    // finished files to import - the history DestDir still points at the
+                    // unfinished intermediate folder (/incomplete/<name>.#<id>). Report it
+                    // as gone so the monitor retires the stale queue row instead of trying
+                    // to import the intermediate directory on every poll forever.
+                    _logger.LogInformation(
+                        "[NzbGet] Download {NzbId} is in history as '{Status}' (removed/refused, not importable) - treating as gone from client",
+                        nzbId, historyItem.Status);
+                    return null;
+                }
 
                 var totalSize = ((long)historyItem.FileSizeHi << 32) | historyItem.FileSizeLo;
 
@@ -567,6 +577,31 @@ public class NzbGetClient
             _logger.LogError(ex, "[NzbGet] Error getting download status");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Map an NZBGet history Status string to a Sportarr download status.
+    /// NZBGet statuses are "CATEGORY/DETAIL" (e.g. SUCCESS/ALL, SUCCESS/UNPACK,
+    /// FAILURE/PAR, FAILURE/MOVE, DELETED/COPY, DELETED/DUPE, WARNING/HEALTH); only the
+    /// category matters here. Returns "completed", "failed", or null. Null means the
+    /// item was removed/refused (DELETED/*) and has nothing to import - callers should
+    /// treat it as no longer present in the client. The previous code matched only a few
+    /// exact strings and defaulted everything else (including DELETED/COPY duplicates) to
+    /// "completed", which made Sportarr import the unfinished intermediate directory.
+    /// </summary>
+    public static string? MapHistoryStatus(string? rawStatus)
+    {
+        var status = (rawStatus ?? string.Empty).Trim();
+
+        if (status.StartsWith("DELETED", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (status.StartsWith("FAILURE", StringComparison.OrdinalIgnoreCase))
+            return "failed";
+
+        // SUCCESS/* (finished), WARNING/* (finished with non-fatal warnings, files
+        // present), and anything unrecognized: treat as completed and let the importer
+        // validate the actual files.
+        return "completed";
     }
 
     /// <summary>

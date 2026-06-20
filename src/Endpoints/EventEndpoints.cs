@@ -261,7 +261,8 @@ app.MapDelete("/api/events/{eventId:int}/files/{fileId:int}", async (
     SportarrDbContext db,
     ILogger<Program> logger,
     ConfigService configService,
-    AutomaticSearchService searchService) =>
+    AutomaticSearchService searchService,
+    NotificationService notificationService) =>
 {
     var evt = await db.Events
         .Include(e => e.Files)
@@ -320,6 +321,18 @@ app.MapDelete("/api/events/{eventId:int}/files/{fileId:int}", async (
     // Remove from database
     db.Remove(file);
 
+    // Record the removal on the event's history timeline.
+    db.EventFileHistory.Add(new EventFileHistory
+    {
+        EventId = eventId,
+        Type = EventFileHistoryType.Deleted,
+        SourceTitle = Path.GetFileName(file.FilePath) ?? file.FilePath,
+        Quality = file.Quality,
+        Reason = deletedFromDisk ? "Deleted by user" : "Removed from library (file already gone)",
+        Part = file.PartName,
+        Date = DateTime.UtcNow
+    });
+
     // Update event's HasFile status
     var remainingFiles = evt.Files.Where(f => f.Id != fileId && f.Exists).ToList();
     if (!remainingFiles.Any())
@@ -340,6 +353,12 @@ app.MapDelete("/api/events/{eventId:int}/files/{fileId:int}", async (
     }
 
     await db.SaveChangesAsync();
+
+    // Tell media servers (Plex/Jellyfin/Emby) and webhooks the file is gone so
+    // they can drop the now-missing item — the same partial scan the import fires,
+    // just pointed at the deleted file's folder. Plex notices the file is missing
+    // on the rescan and removes it (when "empty trash after scan" is enabled).
+    await NotifyFileDeletedAsync(notificationService, logger, evt, file.FilePath);
 
     // Handle blocklist action if specified
     if (blocklistAction == "blocklistAndSearch" || blocklistAction == "blocklistOnly")
@@ -436,7 +455,8 @@ app.MapDelete("/api/events/{id:int}/files", async (
     SportarrDbContext db,
     ILogger<Program> logger,
     ConfigService configService,
-    AutomaticSearchService searchService) =>
+    AutomaticSearchService searchService,
+    NotificationService notificationService) =>
 {
     var evt = await db.Events
         .Include(e => e.Files)
@@ -458,6 +478,13 @@ app.MapDelete("/api/events/{id:int}/files", async (
         .Where(t => !string.IsNullOrEmpty(t))
         .Distinct()
         .ToList();
+
+    // Capture one file path before deletion so we can point the media-server
+    // rescan at the event's folder afterwards (all parts share a folder, so a
+    // single representative path is enough to make Plex re-check it).
+    var representativeDeletedPath = evt.Files
+        .Select(f => f.FilePath)
+        .FirstOrDefault(p => !string.IsNullOrEmpty(p));
 
     var config = await configService.GetConfigAsync();
     var recycleBinPath = config.RecycleBin;
@@ -502,6 +529,9 @@ app.MapDelete("/api/events/{id:int}/files", async (
     evt.Quality = null;
 
     await db.SaveChangesAsync();
+
+    // Tell media servers / webhooks the files are gone (see single-file delete).
+    await NotifyFileDeletedAsync(notificationService, logger, evt, representativeDeletedPath);
 
     // Handle blocklist action if specified
     if (blocklistAction == "blocklistAndSearch" || blocklistAction == "blocklistOnly")
@@ -651,5 +681,43 @@ app.MapPut("/api/leagues/{leagueId:int}/seasons/{season}/toggle", async (
 });
 
         return app;
+    }
+
+    /// <summary>
+    /// Fire an OnEventFileDelete notification so media-server connections
+    /// (Plex/Jellyfin/Emby) and webhooks learn that a file was removed and can
+    /// drop the now-missing item. The media-server refresh scans the deleted
+    /// file's folder, so a single representative path covers an event whose
+    /// parts all live in one folder. Never throws — a notification failure must
+    /// not turn a successful delete into an error response.
+    /// </summary>
+    private static async Task NotifyFileDeletedAsync(
+        NotificationService notificationService,
+        ILogger logger,
+        Event evt,
+        string? filePath)
+    {
+        try
+        {
+            await notificationService.SendNotificationAsync(
+                NotificationTrigger.OnEventFileDelete,
+                $"Deleted: {evt.Title}",
+                string.IsNullOrEmpty(filePath)
+                    ? $"Files removed for {evt.Title}"
+                    : $"File: {Path.GetFileName(filePath)}",
+                new Dictionary<string, object>
+                {
+                    { "eventId", evt.Id },
+                    { "eventTitle", evt.Title ?? "" },
+                    { "league", evt.League?.Name ?? "" },
+                    { "sport", evt.Sport ?? "" },
+                    { "filePath", filePath ?? "" }
+                },
+                evt.League?.Tags);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[FILES] Failed to send delete notification for event {EventId}", evt.Id);
+        }
     }
 }

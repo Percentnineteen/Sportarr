@@ -23,17 +23,20 @@ public class DynamicAuthenticationMiddleware
     {
         var path = context.Request.Path.Value?.ToLower() ?? string.Empty;
 
-        // Log Prowlarr requests for debugging
+        // Trace Prowlarr requests at Debug. Prowlarr polls /api/v1/* on a tight
+        // loop, so logging every request (plus headers) at Information floods the
+        // log on any instance with an indexer proxy configured. Operators who
+        // need this turn on debug logging.
         // Sanitize user-controlled values to prevent log injection attacks
         if (path.StartsWith("/api/v1/"))
         {
             var sanitizedPath = SanitizeForLog(path);
-            logger.LogInformation("[PROWLARR MIDDLEWARE] Request to {Path}", sanitizedPath);
+            logger.LogDebug("[PROWLARR MIDDLEWARE] Request to {Path}", sanitizedPath);
             // Only log non-sensitive headers to prevent credential leakage
             var safeHeaders = context.Request.Headers
                 .Where(h => !IsSensitiveHeader(h.Key))
                 .Select(h => $"{SanitizeForLog(h.Key)}={SanitizeForLog(h.Value)}");
-            logger.LogInformation("[PROWLARR MIDDLEWARE] Headers: {Headers}", string.Join(", ", safeHeaders));
+            logger.LogDebug("[PROWLARR MIDDLEWARE] Headers: {Headers}", string.Join(", ", safeHeaders));
         }
 
         // Allow public paths
@@ -69,7 +72,7 @@ public class DynamicAuthenticationMiddleware
         {
             if (path.StartsWith("/api/v1/"))
             {
-                logger.LogInformation("[PROWLARR MIDDLEWARE] API key authentication succeeded");
+                logger.LogDebug("[PROWLARR MIDDLEWARE] API key authentication succeeded");
             }
             context.User = apiKeyResult.Principal;
             await _next(context);

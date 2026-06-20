@@ -1107,6 +1107,15 @@ public class QBittorrentClient
                 return false;
             }
 
+            // qBittorrent's setCategory rejects an unknown category with 409, so the
+            // move silently fails until the user creates it by hand. Create it first
+            // (no-op if it already exists), matching how the other *arr apps behave.
+            // Skipped for the empty category, which just clears the torrent's category.
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                await EnsureCategoryExistsAsync(config, baseUrl, category);
+            }
+
             var content = new FormUrlEncodedContent(new[]
             {
                 new KeyValuePair<string, string>("hashes", hash),
@@ -1128,223 +1137,11 @@ public class QBittorrentClient
     /// Critical for Prowlarr URLs which require the request to come from Sportarr,
     /// not from qBittorrent which doesn't have Prowlarr's authentication.
     /// </summary>
-    private async Task<TorrentDownloadResult> DownloadTorrentFileAsync(string torrentUrl)
-    {
-        try
-        {
-            // Validate URL format first
-            if (!Uri.TryCreate(torrentUrl, UriKind.Absolute, out var uri))
-            {
-                return TorrentDownloadResult.Failure($"Invalid URL format: {torrentUrl}");
-            }
-
-            // Additional validation: Check if hostname is valid
-            // Uri.TryCreate can pass but HttpClient.SendAsync may still fail with UriFormatException
-            // if the hostname contains invalid characters or is malformed
-            if (string.IsNullOrEmpty(uri.Host) || uri.Host.Contains(' ') || uri.Host.StartsWith(".") || uri.Host.EndsWith("."))
-            {
-                _logger.LogWarning("[qBittorrent] Invalid hostname in URL: {Host}", uri.Host);
-                return TorrentDownloadResult.Failure(
-                    "Indexer returned a URL with an invalid hostname. The indexer may be misconfigured.");
-            }
-
-            // Ensure scheme is http or https
-            if (uri.Scheme != "http" && uri.Scheme != "https")
-            {
-                _logger.LogWarning("[qBittorrent] Unsupported URL scheme: {Scheme}", uri.Scheme);
-                return TorrentDownloadResult.Failure($"Unsupported URL scheme: {uri.Scheme}. Expected http or https.");
-            }
-
-            // Disable automatic redirect following so we can validate redirect URLs
-            // Some indexers return malformed redirect URLs that crash HttpClient
-            var handler = new HttpClientHandler { AllowAutoRedirect = false };
-            using var downloadClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
-
-            // Accept torrent content type so indexers serve us the right blob
-            var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/x-bittorrent"));
-            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("*/*", 0.8));
-
-            _logger.LogDebug("[qBittorrent] Downloading torrent from: {Url}", torrentUrl);
-
-            var response = await downloadClient.SendAsync(request);
-
-            // Handle redirects manually to validate redirect URLs
-            // This prevents UriFormatException from malformed redirect URLs
-            var redirectCount = 0;
-            const int maxRedirects = 5;
-            while ((response.StatusCode == System.Net.HttpStatusCode.Redirect ||
-                    response.StatusCode == System.Net.HttpStatusCode.MovedPermanently ||
-                    response.StatusCode == System.Net.HttpStatusCode.Found ||
-                    response.StatusCode == System.Net.HttpStatusCode.SeeOther ||
-                    response.StatusCode == System.Net.HttpStatusCode.TemporaryRedirect ||
-                    response.StatusCode == System.Net.HttpStatusCode.PermanentRedirect) &&
-                   redirectCount < maxRedirects)
-            {
-                var location = response.Headers.Location?.ToString();
-                if (string.IsNullOrEmpty(location))
-                {
-                    _logger.LogWarning("[qBittorrent] Redirect response without Location header");
-                    break;
-                }
-
-                // Handle magnet link redirects
-                if (location.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogInformation("[qBittorrent] Redirect to magnet link detected: {Magnet}",
-                        location.Length > 100 ? location.Substring(0, 100) + "..." : location);
-                    return TorrentDownloadResult.MagnetRedirect(location);
-                }
-
-                // Validate the redirect URL before following it
-                Uri redirectUri;
-                if (Uri.TryCreate(location, UriKind.Absolute, out redirectUri!))
-                {
-                    // Absolute URL - use as-is
-                }
-                else if (Uri.TryCreate(uri, location, out redirectUri!))
-                {
-                    // Relative URL - resolve against original
-                }
-                else
-                {
-                    _logger.LogWarning("[qBittorrent] Invalid redirect URL from indexer: {Location}",
-                        location.Length > 100 ? location.Substring(0, 100) + "..." : location);
-                    return TorrentDownloadResult.Failure(
-                        "Indexer returned an invalid redirect URL. The indexer may be misconfigured.");
-                }
-
-                // Additional redirect URL validation
-                if (string.IsNullOrEmpty(redirectUri.Host) || redirectUri.Host.Contains(' '))
-                {
-                    _logger.LogWarning("[qBittorrent] Invalid hostname in redirect URL: {Host}", redirectUri.Host);
-                    return TorrentDownloadResult.Failure(
-                        "Indexer redirect URL has an invalid hostname. The indexer may be misconfigured.");
-                }
-
-                _logger.LogDebug("[qBittorrent] Following redirect ({Count}/{Max}): {Url}",
-                    redirectCount + 1, maxRedirects, redirectUri.ToString());
-
-                // Dispose previous response and make new request
-                response.Dispose();
-                var redirectRequest = new HttpRequestMessage(HttpMethod.Get, redirectUri);
-                redirectRequest.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/x-bittorrent"));
-                redirectRequest.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("*/*", 0.8));
-                response = await downloadClient.SendAsync(redirectRequest);
-                redirectCount++;
-            }
-
-            if (redirectCount >= maxRedirects)
-            {
-                _logger.LogWarning("[qBittorrent] Too many redirects ({Count}) - aborting", redirectCount);
-                return TorrentDownloadResult.Failure("Too many redirects from indexer. The download link may be broken.");
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var statusCode = (int)response.StatusCode;
-                var errorBody = await response.Content.ReadAsStringAsync();
-
-                _logger.LogWarning("[qBittorrent] Torrent download failed with HTTP {StatusCode}: {Body}",
-                    statusCode, errorBody.Length > 200 ? errorBody.Substring(0, 200) : errorBody);
-
-                if (statusCode == 429)
-                {
-                    return TorrentDownloadResult.Failure("Indexer is rate limiting requests (HTTP 429). Wait a few minutes and try again.");
-                }
-                if (statusCode == 401 || statusCode == 403)
-                {
-                    return TorrentDownloadResult.Failure($"Indexer requires authentication (HTTP {statusCode}). Check your indexer API key in Prowlarr.");
-                }
-                if (statusCode == 404)
-                {
-                    return TorrentDownloadResult.Failure("Torrent not found (HTTP 404). The release may have been removed or the link expired.");
-                }
-                if (statusCode >= 500)
-                {
-                    return TorrentDownloadResult.Failure($"Indexer/Prowlarr server error (HTTP {statusCode}). The indexer may be down or the session expired. Try re-testing the indexer in Prowlarr.");
-                }
-
-                return TorrentDownloadResult.Failure($"Failed to download torrent: HTTP {statusCode}");
-            }
-
-            var contentBytes = await response.Content.ReadAsByteArrayAsync();
-
-            if (contentBytes.Length == 0)
-            {
-                return TorrentDownloadResult.Failure("Downloaded torrent file is empty");
-            }
-
-            // Check if the response is HTML (error page) instead of torrent data
-            // Valid torrent files start with 'd' (bencode dictionary)
-            if (contentBytes.Length > 0 && contentBytes[0] != (byte)'d')
-            {
-                var preview = Encoding.UTF8.GetString(contentBytes, 0, Math.Min(contentBytes.Length, 100));
-                if (preview.TrimStart().StartsWith("<", StringComparison.OrdinalIgnoreCase) ||
-                    preview.Contains("<!DOCTYPE", StringComparison.OrdinalIgnoreCase) ||
-                    preview.Contains("<html", StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogWarning("[qBittorrent] Indexer returned HTML instead of torrent file. Preview: {Preview}",
-                        preview.Length > 50 ? preview.Substring(0, 50) + "..." : preview);
-                    return TorrentDownloadResult.Failure(
-                        "Indexer returned an HTML page instead of a torrent file. " +
-                        "The torrent link may have expired or the indexer session timed out. " +
-                        "Try re-testing the indexer in Prowlarr.");
-                }
-
-                // Not HTML but also not valid torrent
-                _logger.LogWarning("[qBittorrent] Downloaded data doesn't appear to be a valid torrent file. First byte: 0x{FirstByte:X2}",
-                    contentBytes[0]);
-            }
-
-            // Extract filename from Content-Disposition header if available
-            string? filename = null;
-            if (response.Content.Headers.ContentDisposition?.FileName != null)
-            {
-                filename = response.Content.Headers.ContentDisposition.FileName.Trim('"');
-            }
-            if (string.IsNullOrEmpty(filename))
-            {
-                // Try to get filename from URL
-                filename = uri.Segments.LastOrDefault()?.TrimEnd('/');
-                if (!string.IsNullOrEmpty(filename) && !filename.EndsWith(".torrent", StringComparison.OrdinalIgnoreCase))
-                {
-                    filename += ".torrent";
-                }
-            }
-            filename ??= "download.torrent";
-
-            _logger.LogInformation("[qBittorrent] Successfully downloaded torrent: {Size} bytes, filename: {Filename}",
-                contentBytes.Length, filename);
-
-            return TorrentDownloadResult.Success(contentBytes, filename);
-        }
-        catch (HttpRequestException ex)
-        {
-            _logger.LogError(ex, "[qBittorrent] Network error downloading torrent: {Message}", ex.Message);
-            return TorrentDownloadResult.Failure($"Network error downloading torrent: {ex.Message}");
-        }
-        catch (TaskCanceledException)
-        {
-            _logger.LogError("[qBittorrent] Torrent download timed out");
-            return TorrentDownloadResult.Failure("Torrent download timed out. The indexer may be slow or unreachable.");
-        }
-        catch (UriFormatException ex)
-        {
-            // This can happen when Uri.TryCreate passes but HttpClient's internal validation fails
-            // Common with malformed redirect URLs from some indexers
-            _logger.LogError(ex, "[qBittorrent] Invalid URL from indexer: {Message}. URL: {Url}",
-                ex.Message, torrentUrl.Length > 100 ? torrentUrl.Substring(0, 100) + "..." : torrentUrl);
-            return TorrentDownloadResult.Failure(
-                $"Indexer returned an invalid download URL. The indexer may be misconfigured or returning malformed links. " +
-                $"Try a different indexer or check the indexer settings in Prowlarr.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[qBittorrent] Unexpected error downloading torrent: {Message}", ex.Message);
-            return TorrentDownloadResult.Failure($"Error downloading torrent: {ex.Message}");
-        }
-    }
+    private Task<TorrentDownloadResult> DownloadTorrentFileAsync(string torrentUrl)
+        // Shared with the Transmission and rTorrent paths via TorrentFileResolver,
+        // which follows redirects manually so a magnet redirect is detected rather
+        // than handed to an HTTP client that cannot follow a cross-scheme redirect.
+        => TorrentFileResolver.ResolveAsync(torrentUrl, skipSslValidation: false, _logger);
 
     /// <summary>
     /// Pre-validate a torrent URL by fetching headers to check if it returns valid torrent data.

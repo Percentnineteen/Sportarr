@@ -689,8 +689,10 @@ public class DvrRecordingService
         var config = await _configService.GetConfigAsync();
         var settings = await GetMediaManagementSettingsAsync();
 
-        // Get root folder (same logic as FileImportService)
-        var rootFolder = settings.RootFolders
+        // Get root folder (same logic as FileImportService). Root folders live
+        // in the RootFolders table, loaded + live-state-refreshed here.
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
+        var rootFolder = rootFolders
             .Where(rf => rf.Accessible)
             .OrderByDescending(rf => rf.FreeSpace)
             .FirstOrDefault();
@@ -805,7 +807,6 @@ public class DvrRecordingService
             // Create default settings with granular folder options
             settings = new MediaManagementSettings
             {
-                RootFolders = new List<RootFolder>(),
                 RenameFiles = true,
                 StandardFileFormat = "{Series} - {Season}{Episode}{Part} - {Event Title} - {Quality Full}",
                 // Granular folder settings - default: league/season folders enabled, event folders disabled
@@ -821,14 +822,7 @@ public class DvrRecordingService
             };
         }
 
-        // Load root folders from separate table
-        var rootFolders = await _db.RootFolders.ToListAsync();
-        if (rootFolders.Any())
-        {
-            _diskSpaceService.RefreshLiveState(rootFolders);
-            settings.RootFolders = rootFolders;
-        }
-
+        // Root folders live in the RootFolders table (loaded via RootFolderLoader).
         return settings;
     }
 

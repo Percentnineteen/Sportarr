@@ -545,10 +545,10 @@ app.MapPut("/api/settings", async (AppSettings updatedSettings, ConfigService co
             // Warn (don't block) if the recycle bin is inside a root folder. Scans and the
             // watcher already skip the recycle bin, but keeping it outside the library roots
             // is cleaner and avoids any chance of recycled copies being treated as media.
-            if (!string.IsNullOrWhiteSpace(dbSettings.RecycleBin) && dbSettings.RootFolders != null)
+            if (!string.IsNullOrWhiteSpace(dbSettings.RecycleBin))
             {
                 var rb = dbSettings.RecycleBin.Replace('\\', '/').TrimEnd('/');
-                foreach (var rf in dbSettings.RootFolders)
+                foreach (var rf in await db.RootFolders.ToListAsync())
                 {
                     var root = (rf.Path ?? "").Replace('\\', '/').TrimEnd('/');
                     if (root.Length > 0 &&

@@ -62,23 +62,6 @@ app.MapPost("/api/search/queue", async (
     return Results.Ok(queueItem);
 });
 
-// API: Queue searches for all events in a league
-app.MapPost("/api/search/queue/league/{leagueId:int}", async (
-    int leagueId,
-    SearchQueueService searchQueueService,
-    ILogger<Program> logger) =>
-{
-    logger.LogInformation("[SEARCH QUEUE API] Queueing search for all events in league {LeagueId}", leagueId);
-
-    var queuedItems = await searchQueueService.QueueLeagueSearchAsync(leagueId);
-    return Results.Ok(new {
-        success = true,
-        message = $"Queued {queuedItems.Count} searches",
-        count = queuedItems.Count,
-        items = queuedItems
-    });
-});
-
 // API: Get status of a specific queued search
 app.MapGet("/api/search/queue/{queueId}", (
     string queueId,
@@ -144,22 +127,43 @@ app.MapPost("/api/league/{leagueId:int}/automatic-search", async (
         return Results.NotFound(new { error = "League not found" });
     }
 
-    // Get all monitored events in this league (searches for missing files and upgrades)
-    var events = await db.Events
+    // Get all monitored events in this league, but skip events that haven't
+    // started yet (+1h buffer) and postponed/cancelled ones - mirroring the
+    // per-season search below. A whole-league search must NOT grab releases for
+    // future events: the future event has no release of its own yet, so the
+    // search pulls in an earlier/other race's file (e.g. a Miami release for a
+    // future United States GP, or Barcelona for a future Spanish GP). These run
+    // as task-based "EventSearch" jobs that count as manual searches, so the
+    // per-event "hasn't started yet" guard in SearchAndDownloadEventAsync is
+    // bypassed - filtering at the source here is what enforces it. A single-event
+    // manual search goes through its own endpoint and is intentionally unfiltered.
+    var searchableCutoff = DateTime.UtcNow - TimeSpan.FromHours(1);
+    var allMonitored = await db.Events
         .Where(e => e.LeagueId == leagueId && e.Monitored)
         .ToListAsync();
+    var events = allMonitored
+        .Where(e => e.EventDate <= searchableCutoff
+            && e.Status != "Postponed" && e.Status != "postponed"
+            && e.Status != "Cancelled" && e.Status != "cancelled"
+            && e.Status != "Canceled" && e.Status != "canceled")
+        .ToList();
+    var skippedNotStarted = allMonitored.Count - events.Count;
 
     if (!events.Any())
     {
         return Results.Ok(new
         {
             success = true,
-            message = $"No monitored events found in {league.Name}",
-            eventsSearched = 0
+            message = skippedNotStarted > 0
+                ? $"No events ready to search in {league.Name} ({skippedNotStarted} skipped - not started yet)"
+                : $"No monitored events found in {league.Name}",
+            eventsSearched = 0,
+            skippedNotStarted
         });
     }
 
-    logger.LogInformation("[AUTOMATIC SEARCH] Found {Count} monitored events in league: {League}", events.Count, league.Name);
+    logger.LogInformation("[AUTOMATIC SEARCH] Found {Count} searchable events in league: {League} ({Skipped} skipped - not started)",
+        events.Count, league.Name, skippedNotStarted);
 
     // Check if multi-part episodes are enabled
     var config = await configService.GetConfigAsync();
@@ -208,8 +212,11 @@ app.MapPost("/api/league/{leagueId:int}/automatic-search", async (
     return Results.Ok(new
     {
         success = true,
-        message = $"Queued {totalSearches} automatic searches for {league.Name}",
+        message = skippedNotStarted > 0
+            ? $"Queued {totalSearches} automatic searches for {league.Name} ({skippedNotStarted} events skipped - not started yet)"
+            : $"Queued {totalSearches} automatic searches for {league.Name}",
         eventsSearched = events.Count,
+        skippedNotStarted,
         taskIds = taskIds
     });
 });

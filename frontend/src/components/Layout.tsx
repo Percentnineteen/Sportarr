@@ -69,7 +69,7 @@ export default function Layout() {
       ],
     },
     { label: 'Calendar', icon: ClockIcon, path: '/calendar' },
-    { label: 'Activity', icon: ClockIcon, path: '/activity', badge: activityCounts?.queueCount },
+    { label: 'Activity', icon: ClockIcon, path: '/activity', badge: activityCounts ? ((activityCounts.queueCount + (activityCounts.pendingImportCount ?? 0)) || undefined) : undefined },
     { label: 'Wanted', icon: ExclamationCircleIcon, path: '/wanted' },
     {
       label: 'IPTV',

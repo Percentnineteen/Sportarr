@@ -817,10 +817,19 @@ app.MapPost("/api/leagues/{id:int}/scan", async (int id, SportarrDbContext db, I
     if (league == null)
         return Results.NotFound(new { error = "League not found" });
 
-    // Get root folders from media management settings
-    var settings = await db.MediaManagementSettings.FirstOrDefaultAsync();
-    if (settings?.RootFolders == null || settings.RootFolders.Count == 0)
+    // Root folders live in the RootFolders table — the single source of truth
+    // the UI writes to and what every path (health check, league add, imports)
+    // reads.
+    var rootFolders = await db.RootFolders.ToListAsync();
+    if (rootFolders.Count == 0)
         return Results.BadRequest(new { error = "No root folders configured. Go to Settings > Media Management to add a root folder." });
+
+    // Still load settings for the league-folder naming format (defaulting if
+    // the settings row doesn't exist yet).
+    var settings = await db.MediaManagementSettings.FirstOrDefaultAsync();
+    var leagueFolderFormat = string.IsNullOrEmpty(settings?.LeagueFolderFormat)
+        ? "{Series}"
+        : settings.LeagueFolderFormat;
 
     var videoExtensions = new HashSet<string>(SupportedExtensions.Video, StringComparer.OrdinalIgnoreCase);
 
@@ -849,9 +858,9 @@ app.MapPost("/api/leagues/{id:int}/scan", async (int id, SportarrDbContext db, I
         StringComparer.OrdinalIgnoreCase);
 
     var pendingImports = new List<(PendingImport Import, ImportSuggestion? Suggestion)>();
-    var leagueFolderName = settings.LeagueFolderFormat.Replace("{Series}", league.Name);
+    var leagueFolderName = leagueFolderFormat.Replace("{Series}", league.Name);
 
-    foreach (var rootFolder in settings.RootFolders)
+    foreach (var rootFolder in rootFolders)
     {
         // Scan league-specific folder within root folder
         var leaguePath = Path.Combine(rootFolder.Path, leagueFolderName);
@@ -948,7 +957,7 @@ app.MapPost("/api/leagues/{id:int}/scan", async (int id, SportarrDbContext db, I
     if (pendingPaths.Count > 0)
     {
         var leagueFolders = new List<string>();
-        foreach (var rootFolder in settings.RootFolders)
+        foreach (var rootFolder in rootFolders)
         {
             var lp = Path.Combine(rootFolder.Path, leagueFolderName);
             if (Directory.Exists(lp)) leagueFolders.Add(lp);

@@ -465,7 +465,7 @@ export default function GeneralSettings({ showAdvanced = false }: GeneralSetting
               placeholder="/sportarr"
             />
             <p className="text-xs text-gray-500 mt-1">
-              For reverse proxy support, leave empty if not using a reverse proxy
+              For reverse proxy support (e.g. serving Sportarr under /sportarr). Leave empty if not using a reverse proxy. Requires a restart to apply, and the proxy must forward the full path including the base (do not strip it).
             </p>
           </div>
 

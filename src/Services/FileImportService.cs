@@ -98,9 +98,35 @@ public class FileImportService : IFileImportService
         _logger.LogInformation("Starting import for download: {Title} (ID: {DownloadId})",
             download.Title, download.DownloadId);
 
+        // Make sure the download row is tracked before we mutate its status.
+        // The background monitor reuses one scoped DbContext for every download
+        // in a poll, and the catch block below detaches everything except the
+        // download whose import just failed — which leaves the *other*
+        // still-to-process downloads in that same poll detached. If this row is
+        // detached, its status transitions (Importing, then Imported/Failed)
+        // would silently not persist and it would be reprocessed every poll.
+        // Re-track only the single entity (no graph walk, so a stale Event
+        // navigation isn't dragged in). Skip transient rows: manual import
+        // builds a DownloadQueueItem with Id == 0 that must not be inserted.
+        if (download.Id != 0 && _db.Entry(download).State == EntityState.Detached)
+        {
+            _db.Entry(download).State = EntityState.Unchanged;
+        }
+
         // Update status to importing
         download.Status = DownloadStatus.Importing;
         await _db.SaveChangesAsync();
+
+        // Track the file we transfer this run so the catch can remove it if the
+        // import fails after the transfer — otherwise a half-finished import
+        // leaves an untracked copy in the library (duplicate files on disk that
+        // never get cleaned up or recorded).
+        string? transferredDestPath = null;
+        string? transferSourcePath = null;
+
+        // Old file path removed when this import is an upgrade, captured so we can
+        // fire an OnEventFileDeleteForUpgrade notification once the import commits.
+        string? upgradedOldFilePath = null;
 
         try
         {
@@ -113,6 +139,17 @@ public class FileImportService : IFileImportService
             {
                 throw new Exception($"Event {download.EventId} not found");
             }
+
+            // Point the download's Event navigation at the instance we just loaded.
+            // The background monitor reuses one scoped DbContext across every download
+            // in a poll and Includes each row's Event; when a sibling import fails the
+            // catch below detaches that shared Event, leaving this download's nav
+            // referencing a now-detached duplicate. EF then hits "another instance with
+            // the same key value for {'Id'} is already being tracked" while saving the
+            // import — AFTER the file is already on disk — which fails the import and
+            // loops forever. Re-binding to the tracked instance keeps a single Event in
+            // the change tracker. No-op for the manual-import endpoints (same instance).
+            download.Event = eventInfo;
 
             // Get media management settings
             var settings = await GetMediaManagementSettingsAsync();
@@ -267,7 +304,8 @@ public class FileImportService : IFileImportService
 
             // Build destination path (use actual file size for debrid symlink compatibility)
             // Pass download.Quality to preserve quality info from original release title (not re-parsed from downloaded filename)
-            var rootFolder = await GetRootFolderForLeagueAsync(settings, eventInfo.League, actualFileSize);
+            var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
+        var rootFolder = await GetRootFolderForLeagueAsync(settings, rootFolders, eventInfo.League, actualFileSize);
             var destinationPath = await BuildDestinationPath(settings, eventInfo, parsed, fileInfo.Extension, rootFolder, sourceFile, download.Part, download.Quality);
 
             _logger.LogInformation("Destination path: {Path}", destinationPath);
@@ -382,6 +420,21 @@ public class FileImportService : IFileImportService
                 // Marking Exists=false left phantom records that accumulated on repeated upgrades
                 // and showed as duplicate files in the UI if anything went wrong.
                 _db.EventFiles.Remove(upgradedFile);
+                upgradedOldFilePath = upgradedFile.FilePath;
+
+                // Record the removal on the event's timeline so the history shows
+                // the full chain (old file deleted when the upgrade came in),
+                // matching how the other *arr apps log upgrades.
+                _db.EventFileHistory.Add(new EventFileHistory
+                {
+                    EventId = eventInfo.Id,
+                    Type = EventFileHistoryType.DeletedForUpgrade,
+                    SourceTitle = System.IO.Path.GetFileName(upgradedFile.FilePath) ?? upgradedFile.FilePath,
+                    Quality = upgradedFile.Quality,
+                    Reason = $"Upgraded to {qualityString}",
+                    Part = upgradedFile.PartName,
+                    Date = DateTime.UtcNow
+                });
             }
 
             // Check free space
@@ -401,6 +454,11 @@ public class FileImportService : IFileImportService
             // Move or copy file (old file already deleted above if this is an upgrade)
             await TransferFileAsync(sourceFile, destinationPath, settings);
 
+            // Record what we just transferred so a later failure in this method
+            // can roll the file back instead of leaving an orphan in the library.
+            transferSourcePath = sourceFile;
+            transferredDestPath = destinationPath;
+
             // Set permissions (Linux/macOS only)
             if (settings.SetPermissions && !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -409,12 +467,24 @@ public class FileImportService : IFileImportService
 
             // Create import history record
             // Note: Use actualFileSize captured BEFORE transfer - source file no longer exists after move
+            // Set the FK ids ONLY — do not also assign the Event /
+            // DownloadQueueItem navigation objects. eventInfo is already
+            // tracked (loaded at the top of this method) and the relationship
+            // is fully expressed by the ids. Assigning the navigations made
+            // Add() walk the graph and try to track download.Event, which —
+            // when the scoped context had separately reloaded that event as a
+            // different instance (the monitor reuses one context per poll and
+            // the failure path detaches entities) — collided with eventInfo and
+            // threw "another instance with the same key value for {'Id'} is
+            // already being tracked", failing every import.
             var history = new ImportHistory
             {
                 EventId = eventInfo.Id,
-                Event = eventInfo,
-                DownloadQueueItemId = download.Id,
-                DownloadQueueItem = download,
+                // Manual import passes a transient DownloadQueueItem (Id == 0)
+                // that was never persisted; record no link rather than a
+                // dangling FK (or, as the navigation form did, a phantom queue
+                // row inserted as a side effect of the import).
+                DownloadQueueItemId = download.Id != 0 ? download.Id : (int?)null,
                 SourcePath = sourceFile,
                 DestinationPath = destinationPath,
                 Quality = qualityString,
@@ -533,6 +603,34 @@ public class FileImportService : IFileImportService
                 _logger.LogWarning(ex, "[Import] Failed to send notifications about import: {Error}", ex.Message);
             }
 
+            // When this import replaced an older file, tell webhooks / media servers
+            // the old file was removed (parity with the manual delete path). Media
+            // servers already got refreshed for the new file by OnDownload above, so
+            // this only matters to consumers that subscribe to delete events.
+            if (!string.IsNullOrEmpty(upgradedOldFilePath))
+            {
+                try
+                {
+                    await _notificationService.SendNotificationAsync(
+                        NotificationTrigger.OnEventFileDeleteForUpgrade,
+                        $"Deleted for upgrade: {eventInfo.Title}",
+                        $"Old file: {Path.GetFileName(upgradedOldFilePath)}",
+                        new Dictionary<string, object>
+                        {
+                            { "eventId", eventInfo.Id },
+                            { "eventTitle", eventInfo.Title ?? "" },
+                            { "league", eventInfo.League?.Name ?? "" },
+                            { "sport", eventInfo.Sport ?? "" },
+                            { "filePath", upgradedOldFilePath }
+                        },
+                        eventInfo.League?.Tags);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Import] Failed to send upgrade-delete notification: {Error}", ex.Message);
+                }
+            }
+
             // Only delete source folder locally when in MOVE mode
             // - Move mode (CopyFiles=false): Delete source folder after import
             // - Copy mode (CopyFiles=true): Don't delete locally - rely on download client to cleanup
@@ -564,6 +662,26 @@ public class FileImportService : IFileImportService
             {
                 if (!ReferenceEquals(entry.Entity, download))
                     entry.State = EntityState.Detached;
+            }
+
+            // Roll back the file we transferred this run. Without this, an import
+            // that transfers the file and then fails leaves an untracked copy in
+            // the library — the "multiple copies of the same event on disk" with
+            // no history. Only delete it when the source still exists (a copy or
+            // hardlink, or a move that didn't complete) so we never destroy the
+            // only copy of a moved file; the next import attempt re-transfers it.
+            if (!string.IsNullOrEmpty(transferredDestPath) && File.Exists(transferredDestPath) &&
+                !string.IsNullOrEmpty(transferSourcePath) && File.Exists(transferSourcePath))
+            {
+                try
+                {
+                    File.Delete(transferredDestPath);
+                    _logger.LogInformation("[Import] Rolled back transferred file after failed import: {Path}", transferredDestPath);
+                }
+                catch (Exception cleanupEx)
+                {
+                    _logger.LogWarning(cleanupEx, "[Import] Could not roll back transferred file after failed import: {Path}", transferredDestPath);
+                }
             }
 
             // Update status to failed
@@ -680,15 +798,21 @@ public class FileImportService : IFileImportService
 
         if (File.Exists(path))
         {
-            // Single file
-            if (IsVideoFile(path))
+            // Single file: judge only the filename (the caller pointed at this
+            // exact file, so a parent folder that happens to contain "sample"
+            // must not exclude it).
+            if (IsVideoFile(path) && !SampleFileFilter.IsSample(Path.GetFileName(path)))
                 files.Add(path);
         }
         else if (Directory.Exists(path))
         {
-            // Directory - search recursively
-            files.AddRange(Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
-                .Where(IsVideoFile));
+            // Directory - search recursively. Exclude release sample clips so
+            // the "largest file" pick below can't grab a tens-of-MB preview as
+            // the event when the real file is missing or still in archives.
+            files.AddRange(SampleFileFilter.FilterSamples(
+                Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
+                    .Where(IsVideoFile),
+                path));
         }
 
         return files;
@@ -996,6 +1120,24 @@ public class FileImportService : IFileImportService
                         "Source dir '{SourceDir}' and destination dir '{DestDir}' are on different mounts. " +
                         "Hardlinks require both the download and library paths to live under a single shared volume/mount.",
                         Path.GetDirectoryName(source), Path.GetDirectoryName(destination));
+                }
+                else if (message.Contains("operation not permitted") ||
+                         message.Contains("permission denied"))
+                {
+                    // "Operation not permitted" (EPERM) on an otherwise valid same-volume
+                    // hardlink is almost always the kernel's fs.protected_hardlinks guard:
+                    // a non-root process may only hardlink a file it OWNS or has write
+                    // access to. The download file is typically owned by the download
+                    // client's user, so Sportarr's user is refused. (Running `ln` via
+                    // `docker exec` succeeds because that runs as root, which is exempt -
+                    // it is not a sign the app should be able to link it.) Falls back to
+                    // copy, which works but uses extra disk and isn't instant.
+                    _logger.LogWarning("[Transfer] Hardlink failed (permission denied) - falling back to copy. " +
+                        "The OS blocked the hardlink (fs.protected_hardlinks): Sportarr's user must OWN or have " +
+                        "write access to the source file '{Source}'. Fix by aligning the download client and Sportarr " +
+                        "to the same PUID/PGID and a group-writable umask (e.g. 002) so both share ownership of the " +
+                        "downloads, or set 'sysctl fs.protected_hardlinks=0' on the host. Until then imports copy " +
+                        "instead of hardlinking.", source);
                 }
                 else
                 {
@@ -1419,16 +1561,16 @@ public class FileImportService : IFileImportService
     /// leagues that were added before the binding existed or whose bound
     /// root folder has since been removed / become inaccessible.
     /// </summary>
-    private Task<string> GetRootFolderForLeagueAsync(MediaManagementSettings settings, League? league, long fileSize)
+    private Task<string> GetRootFolderForLeagueAsync(MediaManagementSettings settings, List<RootFolder> rootFolders, League? league, long fileSize)
     {
-        if (settings.RootFolders == null || settings.RootFolders.Count == 0)
+        if (rootFolders == null || rootFolders.Count == 0)
         {
             throw new Exception("No root folders configured");
         }
 
         if (league?.RootFolderId is int boundId)
         {
-            var bound = settings.RootFolders.FirstOrDefault(rf => rf.Id == boundId);
+            var bound = rootFolders.FirstOrDefault(rf => rf.Id == boundId);
             if (bound != null && bound.Accessible)
             {
                 return Task.FromResult(bound.Path);
@@ -1441,7 +1583,7 @@ public class FileImportService : IFileImportService
                 league.Id, league.Name, boundId);
         }
 
-        return Task.FromResult(SelectRootFolderByFreeSpace(settings, fileSize));
+        return Task.FromResult(SelectRootFolderByFreeSpace(settings, rootFolders, fileSize));
     }
 
     /// <summary>
@@ -1449,24 +1591,24 @@ public class FileImportService : IFileImportService
     /// without a RootFolderId binding so existing setups keep importing.
     /// New code should prefer GetRootFolderForLeagueAsync.
     /// </summary>
-    private string SelectRootFolderByFreeSpace(MediaManagementSettings settings, long fileSize)
+    private string SelectRootFolderByFreeSpace(MediaManagementSettings settings, List<RootFolder> rootFolders, long fileSize)
     {
-        var rootFolders = settings.RootFolders
+        var accessibleRoots = rootFolders
             .Where(rf => rf.Accessible)
             .OrderByDescending(rf => rf.FreeSpace)
             .ToList();
 
-        if (rootFolders.Count == 0)
+        if (accessibleRoots.Count == 0)
         {
             throw new Exception("No accessible root folders configured");
         }
 
         var fileSizeMB = fileSize / 1024 / 1024;
-        var folder = rootFolders.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace);
+        var folder = accessibleRoots.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace);
 
         if (folder == null)
         {
-            folder = rootFolders.First();
+            folder = accessibleRoots.First();
             _logger.LogWarning("No root folder has enough free space, using folder with most space: {Path}", folder.Path);
         }
 
@@ -1666,7 +1808,6 @@ public class FileImportService : IFileImportService
             // Create default settings with granular folder options
             settings = new MediaManagementSettings
             {
-                RootFolders = new List<RootFolder>(),
                 RenameFiles = true,
                 StandardFileFormat = "{Series} - {Season}{Episode}{Part} - {Event Title} - {Quality Full}",
                 // Granular folder settings - default: league/season folders enabled, event folders disabled
@@ -1691,35 +1832,8 @@ public class FileImportService : IFileImportService
         settings.SkipFreeSpaceCheck = config.SkipFreeSpaceCheck;
         settings.MinimumFreeSpace = config.MinimumFreeSpace;
 
-        // IMPORTANT: Load root folders from separate RootFolders table
-        // The UI saves root folders to DbSet<RootFolder>, not to the JSON column in MediaManagementSettings
-        var rootFolders = await _db.RootFolders.ToListAsync();
-        if (rootFolders.Any())
-        {
-            _logger.LogInformation("Loaded {Count} root folders from database", rootFolders.Count);
-
-            // Refresh Accessible/FreeSpace/TotalSpace from disk. The columns
-            // are no longer persisted (they only produced drift between row
-            // and reality), so the loaded entities arrive with defaults and
-            // we fill in the live values here.
-            _diskSpaceService.RefreshLiveState(rootFolders);
-
-            foreach (var folder in rootFolders.Where(rf => !rf.Accessible))
-            {
-                _logger.LogWarning("Root folder is not accessible: {Path}. " +
-                    "If using Docker, check volume mappings match between download client and Sportarr.", folder.Path);
-            }
-
-            var accessibleCount = rootFolders.Count(rf => rf.Accessible);
-            _logger.LogInformation("{AccessibleCount}/{TotalCount} root folders are accessible", accessibleCount, rootFolders.Count);
-
-            settings.RootFolders = rootFolders;
-        }
-        else
-        {
-            _logger.LogWarning("No root folders configured in database. Import will fail. Please configure root folders in Settings > Media Management.");
-        }
-
+        // Root folders are NOT part of these settings — they live in the
+        // RootFolders table and are loaded via RootFolderLoader where needed.
         return settings;
     }
 

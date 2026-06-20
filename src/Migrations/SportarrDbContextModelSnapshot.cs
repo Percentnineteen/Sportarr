@@ -1296,76 +1296,6 @@ namespace Sportarr.Api.Migrations
                     b.ToTable("EventFiles");
                 });
 
-            modelBuilder.Entity("Sportarr.Api.Models.EventMapping", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime?>("LastSyncedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("LeagueId")
-                        .HasMaxLength(50)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("LeagueName")
-                        .HasMaxLength(200)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("Priority")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("QueryConfigJson")
-                        .HasMaxLength(2000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ReleaseNames")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<int?>("RemoteId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("SessionPatternsJson")
-                        .HasMaxLength(4000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SportType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("IsActive");
-
-                    b.HasIndex("Priority");
-
-                    b.HasIndex("RemoteId");
-
-                    b.HasIndex("Source");
-
-                    b.HasIndex("SportType", "LeagueId")
-                        .IsUnique();
-
-                    b.ToTable("EventMappings");
-                });
-
             modelBuilder.Entity("Sportarr.Api.Models.GrabHistory", b =>
                 {
                     b.Property<int>("Id")
@@ -2285,10 +2215,6 @@ namespace Sportarr.Api.Migrations
 
                     b.Property<bool>("ReplaceIllegalCharacters")
                         .HasColumnType("INTEGER");
-
-                    b.Property<string>("RootFolders")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
 
                     b.Property<string>("SeasonFolderFormat")
                         .IsRequired()
@@ -3388,62 +3314,6 @@ namespace Sportarr.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("RootFolders");
-                });
-
-            modelBuilder.Entity("Sportarr.Api.Models.SubmittedMappingRequest", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime?>("LastCheckedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("LeagueName")
-                        .HasMaxLength(200)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ReleaseNames")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("RemoteRequestId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("ReviewNotes")
-                        .HasMaxLength(1000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime?>("ReviewedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SportType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("SubmittedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("UserNotified")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RemoteRequestId")
-                        .IsUnique();
-
-                    b.HasIndex("Status");
-
-                    b.HasIndex("UserNotified");
-
-                    b.ToTable("SubmittedMappingRequests");
                 });
 
             modelBuilder.Entity("Sportarr.Api.Models.SystemEvent", b =>

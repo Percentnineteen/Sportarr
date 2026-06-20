@@ -24,6 +24,7 @@ public class AutomaticSearchService : IAutomaticSearchService
     private readonly SearchResultCache _searchResultCache;
     private readonly ReleaseEvaluator _releaseEvaluator;
     private readonly ReleaseProfileService _releaseProfileService;
+    private readonly EventPartDetector _partDetector;
     private readonly ILogger<AutomaticSearchService> _logger;
 
     // Max 3 concurrent event searches to prevent overwhelming indexers
@@ -45,6 +46,7 @@ public class AutomaticSearchService : IAutomaticSearchService
         SearchResultCache searchResultCache,
         ReleaseEvaluator releaseEvaluator,
         ReleaseProfileService releaseProfileService,
+        EventPartDetector partDetector,
         ILogger<AutomaticSearchService> logger)
     {
         _db = db;
@@ -59,6 +61,7 @@ public class AutomaticSearchService : IAutomaticSearchService
         _searchResultCache = searchResultCache;
         _releaseEvaluator = releaseEvaluator;
         _releaseProfileService = releaseProfileService;
+        _partDetector = partDetector;
         _logger = logger;
     }
 
@@ -366,6 +369,50 @@ public class AutomaticSearchService : IAutomaticSearchService
 
             result.ReleasesFound = allReleases.Count;
             _logger.LogInformation("[Automatic Search] Found {Count} total releases", allReleases.Count);
+
+            // MONITORED-PART FILTER (part-less automatic searches of fighting events).
+            // Callers like the backlog/missing search invoke this with part == null, and
+            // with no specific part requested the release evaluator accepts ANY part - so
+            // an unmonitored pre-lims release could be grabbed while the monitored main
+            // card is ignored. When the event (or, by inheritance, its league) monitors
+            // only specific parts, drop releases whose detected part is not monitored.
+            // Full-event files (no detected part) are kept; manual searches are untouched
+            // so an explicit user search still sees everything.
+            if (!isManualSearch && string.IsNullOrEmpty(part) &&
+                config.EnableMultiPartEpisodes && EventPartDetector.IsFightingSport(evt.Sport ?? ""))
+            {
+                var effectiveMonitoredParts = evt.MonitoredParts ?? evt.League?.MonitoredParts;
+                if (!string.IsNullOrEmpty(effectiveMonitoredParts))
+                {
+                    var monitoredSet = effectiveMonitoredParts
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    var beforeCount = allReleases.Count;
+                    allReleases = allReleases.Where(r =>
+                    {
+                        var detected = _partDetector.DetectPart(r.Title, evt.Sport ?? "Fighting", evt.Title);
+                        // Keep full-event files (no part) and monitored parts; drop the rest.
+                        return detected == null || monitoredSet.Contains(detected.SegmentName);
+                    }).ToList();
+
+                    var dropped = beforeCount - allReleases.Count;
+                    if (dropped > 0)
+                    {
+                        _logger.LogInformation("[Automatic Search] Dropped {Dropped} release(s) for unmonitored parts (monitored: {Parts}) for: {Title}",
+                            dropped, effectiveMonitoredParts, evt.Title);
+                    }
+
+                    if (allReleases.Count == 0)
+                    {
+                        result.Success = false;
+                        result.Message = $"Only unmonitored parts available (monitored: {effectiveMonitoredParts}). Waiting for a monitored part to be released.";
+                        _logger.LogInformation("[Automatic Search] No monitored-part releases yet for: {Title} (monitored: {Parts})",
+                            evt.Title, effectiveMonitoredParts);
+                        return result;
+                    }
+                }
+            }
 
             // MATCH SCORING: Calculate how well each release matches the event
             // This is critical for filtering out wrong releases (different games, TV shows, etc.)
@@ -955,6 +1002,26 @@ public class AutomaticSearchService : IAutomaticSearchService
                         upgradeReason = "not better than existing";
                     }
 
+                    // NET-UPGRADE GUARD (automatic grabs only): the import step compares the
+                    // TOTAL score (quality + custom format) and refuses anything that is not
+                    // strictly higher than the existing file (FileImportService), and RSS sync
+                    // already does the same. The quality-only isQualityUpgrade check above can
+                    // approve a higher-resolution release whose total still sits below an
+                    // existing file boosted by a custom format (e.g. a +2000 release group),
+                    // so Sportarr would grab and download it only for the importer to throw it
+                    // away as "not an upgrade." Mirror the import's total-score rule here so we
+                    // never waste a download. Manual searches keep the user's explicit choice.
+                    if (shouldUpgrade && !isManualSearch)
+                    {
+                        var existingTotalScore = existingQualityScore + existingFormatScore;
+                        var newReleaseTotalScore = newReleaseQualityScore + newReleaseFormatScore;
+                        if (newReleaseTotalScore <= existingTotalScore)
+                        {
+                            shouldUpgrade = false;
+                            upgradeReason = $"not a net upgrade (existing total {existingTotalScore} >= new total {newReleaseTotalScore})";
+                        }
+                    }
+
                     if (!shouldUpgrade)
                     {
                         result.Success = false;
@@ -1228,9 +1295,15 @@ public class AutomaticSearchService : IAutomaticSearchService
                 // null = all parts monitored by default
                 // "" = no parts monitored
                 // "Part1,Part2" = specific parts monitored
-                var monitoredPartNames = evt.MonitoredParts == null
-                    ? null // null means all monitored
-                    : evt.MonitoredParts.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                // Fall back to the league's MonitoredParts when the event doesn't set its
+                // own (evt.MonitoredParts == null means "inherit from league"), matching
+                // RSS sync and the documented model. Without this, a league-level
+                // "Main Card only" setting was ignored and every part - including
+                // unmonitored pre-lims - got its own search target.
+                var effectiveMonitoredParts = evt.MonitoredParts ?? evt.League?.MonitoredParts;
+                var monitoredPartNames = effectiveMonitoredParts == null
+                    ? null // null (no event or league setting) means all monitored
+                    : effectiveMonitoredParts.Split(',', StringSplitOptions.RemoveEmptyEntries)
                         .Select(p => p.Trim())
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
 

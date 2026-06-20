@@ -110,6 +110,32 @@ public class EnhancedDownloadMonitorService : BackgroundService
         var fileImportService = scope.ServiceProvider.GetRequiredService<FileImportService>();
         var configService = scope.ServiceProvider.GetRequiredService<ConfigService>();
 
+        // Hygiene: drop queue and grab-history rows whose event no longer exists.
+        // These orphans appear when an event is removed (its DownloadQueue cascade
+        // isn't enforced on every legacy DB), leaving stale "Completed" rows that
+        // clutter the Activity queue and that the dedup (keyed on event id) can't
+        // match — so the same release looks un-grabbed and gets re-grabbed. Cheap
+        // anti-join, normally deletes nothing once events are stable.
+        try
+        {
+            var removedQueue = await db.DownloadQueue
+                .Where(d => !db.Events.Any(e => e.Id == d.EventId))
+                .ExecuteDeleteAsync(cancellationToken);
+            var removedGrabs = await db.GrabHistory
+                .Where(g => !db.Events.Any(e => e.Id == g.EventId))
+                .ExecuteDeleteAsync(cancellationToken);
+            if (removedQueue > 0 || removedGrabs > 0)
+            {
+                _logger.LogInformation(
+                    "[Enhanced Download Monitor] Cleaned up orphaned rows whose event no longer exists: {Queue} queue, {Grabs} grab-history",
+                    removedQueue, removedGrabs);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Enhanced Download Monitor] Orphaned-row cleanup failed");
+        }
+
         // Get all active downloads (not completed, not imported, not failed permanently).
         //
         // Two separate retry counters gate exclusion:

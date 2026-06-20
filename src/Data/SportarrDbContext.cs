@@ -43,6 +43,7 @@ public class SportarrDbContext : DbContext
     public DbSet<SystemEvent> SystemEvents => Set<SystemEvent>();
     public DbSet<RemotePathMapping> RemotePathMappings => Set<RemotePathMapping>();
     public DbSet<GrabHistory> GrabHistory => Set<GrabHistory>();
+    public DbSet<EventFileHistory> EventFileHistory => Set<EventFileHistory>();
 
     // Release cache for RSS-first search strategy
     public DbSet<ReleaseCache> ReleaseCache => Set<ReleaseCache>();
@@ -56,12 +57,6 @@ public class SportarrDbContext : DbContext
     public DbSet<EpgSource> EpgSources => Set<EpgSource>();
     public DbSet<EpgChannel> EpgChannels => Set<EpgChannel>();
     public DbSet<EpgProgram> EpgPrograms => Set<EpgProgram>();
-
-    // Event mapping (synced from Sportarr-API with local overrides)
-    public DbSet<EventMapping> EventMappings => Set<EventMapping>();
-
-    // Submitted mapping requests (tracks requests sent to Sportarr-API for status checking)
-    public DbSet<SubmittedMappingRequest> SubmittedMappingRequests => Set<SubmittedMappingRequest>();
 
     // Import list exclusions (for Maintainerr API compatibility)
     public DbSet<ImportListExclusion> ImportListExclusions => Set<ImportListExclusion>();
@@ -937,13 +932,10 @@ public class SportarrDbContext : DbContext
             entity.HasKey(m => m.Id);
             entity.Property(m => m.StandardFileFormat).IsRequired().HasMaxLength(500);
             entity.Property(m => m.EventFolderFormat).IsRequired().HasMaxLength(500);
-            entity.Property(m => m.RootFolders).HasConversion(
-                v => System.Text.Json.JsonSerializer.Serialize(v, JsonSerializerOptionsProvider.Database),
-                v => System.Text.Json.JsonSerializer.Deserialize<List<RootFolder>>(v, JsonSerializerOptionsProvider.Database) ?? new List<RootFolder>()
-            ).Metadata.SetValueComparer(new ValueComparer<List<RootFolder>>(
-                (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
-                c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                c => c.ToList()));
+            // Root folders are NOT stored here. They live in the RootFolders
+            // table (DbSet<RootFolder>), which is the single source of truth the
+            // UI writes to. The former RootFolders JSON column on this entity was
+            // a denormalized cache that drifted; it has been removed.
         });
 
         // ImportHistory configuration
@@ -980,6 +972,22 @@ public class SportarrDbContext : DbContext
             entity.HasIndex(h => h.EventId);
             entity.HasIndex(h => h.ImportedAt);
             entity.HasIndex(h => h.DestinationPath); // For file lookup operations
+        });
+
+        // EventFileHistory configuration - records file removals for the timeline
+        modelBuilder.Entity<EventFileHistory>(entity =>
+        {
+            entity.HasKey(h => h.Id);
+            entity.Property(h => h.SourceTitle).HasMaxLength(1000);
+            entity.Property(h => h.Quality).HasMaxLength(100);
+            entity.Property(h => h.Reason).HasMaxLength(500);
+            // Keep the row after the event is deleted (history is informational).
+            entity.HasOne(h => h.Event)
+                  .WithMany()
+                  .HasForeignKey(h => h.EventId)
+                  .OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(h => h.EventId);
+            entity.HasIndex(h => h.Date);
         });
 
         // GrabHistory configuration - stores original release info for re-grabbing
@@ -1197,55 +1205,6 @@ public class SportarrDbContext : DbContext
             entity.HasIndex(p => p.EndTime);
             entity.HasIndex(p => p.IsSportsProgram);
             entity.HasIndex(p => p.MatchedEventId);
-        });
-
-        // ============================================================================
-        // EVENT MAPPING Configuration
-        // ============================================================================
-
-        modelBuilder.Entity<EventMapping>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.SportType).IsRequired().HasMaxLength(100);
-            entity.Property(e => e.LeagueId).HasMaxLength(50);
-            entity.Property(e => e.LeagueName).HasMaxLength(200);
-            entity.Property(e => e.Source).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.SessionPatternsJson).HasMaxLength(4000);
-            entity.Property(e => e.QueryConfigJson).HasMaxLength(2000);
-
-            // ReleaseNames stored as JSON array
-            entity.Property(e => e.ReleaseNames).HasConversion(
-                v => System.Text.Json.JsonSerializer.Serialize(v, JsonSerializerOptionsProvider.Database),
-                v => System.Text.Json.JsonSerializer.Deserialize<List<string>>(v, JsonSerializerOptionsProvider.Database) ?? new List<string>()
-            ).Metadata.SetValueComparer(new ValueComparer<List<string>>(
-                (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
-                c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                c => c.ToList()));
-
-            // Unique constraint: one mapping per sport/league combination
-            entity.HasIndex(e => new { e.SportType, e.LeagueId }).IsUnique();
-            entity.HasIndex(e => e.RemoteId);
-            entity.HasIndex(e => e.IsActive);
-            entity.HasIndex(e => e.Priority);
-            entity.HasIndex(e => e.Source);
-        });
-
-        // ============================================================================
-        // SUBMITTED MAPPING REQUEST Configuration (for status tracking)
-        // ============================================================================
-
-        modelBuilder.Entity<SubmittedMappingRequest>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.SportType).IsRequired().HasMaxLength(100);
-            entity.Property(e => e.LeagueName).HasMaxLength(200);
-            entity.Property(e => e.ReleaseNames).IsRequired().HasMaxLength(1000);
-            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.ReviewNotes).HasMaxLength(1000);
-
-            entity.HasIndex(e => e.RemoteRequestId).IsUnique();
-            entity.HasIndex(e => e.Status);
-            entity.HasIndex(e => e.UserNotified);
         });
 
         // ============================================================================

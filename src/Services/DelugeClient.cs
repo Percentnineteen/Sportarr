@@ -703,6 +703,38 @@ public class DelugeClient
     }
 
     /// <summary>
+    /// Move a torrent to a label (Deluge's equivalent of a category), creating
+    /// the label first if it doesn't exist — Deluge's Label plugin rejects
+    /// set_torrent for a label that was never added. Used for the post-import
+    /// category move. The empty category clears the torrent's label. Requires
+    /// the Label plugin to be enabled.
+    /// </summary>
+    public async Task<bool> SetCategoryAsync(DownloadClient config, string hash, string category)
+    {
+        try
+        {
+            if (!await IsLabelPluginEnabledAsync(config))
+            {
+                _logger.LogWarning("[Deluge] Label plugin is not enabled - cannot set category '{Category}' on {Hash}", category, hash);
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                await EnsureLabelExistsAsync(config, category);
+            }
+
+            await SetTorrentLabelAsync(config, hash, category ?? string.Empty);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Deluge] Error setting category '{Category}' on torrent {Hash}", category, hash);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Get Deluge daemon version, trying daemon.get_version first (Deluge 2.x),
     /// falling back to daemon.info (Deluge 1.x). Matches Radarr's GetVersion behavior.
     /// </summary>

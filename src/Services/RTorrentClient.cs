@@ -256,6 +256,27 @@ public class RTorrentClient
     }
 
     /// <summary>
+    /// Move a torrent to a category (the free-form custom1 label, rTorrent's
+    /// category equivalent) for the post-import category move. Labels are
+    /// free-form, so there's no separate "create" step; an empty category
+    /// clears the label.
+    /// </summary>
+    public async Task<bool> SetCategoryAsync(DownloadClient config, string hash, string category)
+    {
+        try
+        {
+            ConfigureClient(config);
+            var response = await SendXmlRpcRequestAsync(config, "d.custom1.set", new object[] { hash, category ?? string.Empty });
+            return response != null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[rTorrent] Error setting category '{Category}' on torrent {Hash}", category, hash);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// List all torrents matching a category (rTorrent label / custom1) for external download detection.
     /// rTorrent has no native category concept; Sportarr maps "category" to the d.custom1 label.
     /// Falls back to filtering by directory if no torrents match by label.

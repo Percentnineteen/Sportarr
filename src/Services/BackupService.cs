@@ -377,14 +377,10 @@ public class BackupService
                 TotalLeagues = await _db.Leagues.CountAsync(),
             };
 
-            var settings = await _db.MediaManagementSettings.FirstOrDefaultAsync();
-            if (settings?.RootFolders != null)
-            {
-                manifest.RootFolders = settings.RootFolders
-                    .Where(rf => !string.IsNullOrEmpty(rf.Path))
-                    .Select(rf => rf.Path)
-                    .ToList();
-            }
+            manifest.RootFolders = (await _db.RootFolders.ToListAsync())
+                .Where(rf => !string.IsNullOrEmpty(rf.Path))
+                .Select(rf => rf.Path)
+                .ToList();
 
             manifest.SampleFiles = await _db.EventFiles
                 .AsNoTracking()

@@ -91,12 +91,23 @@ app.MapGet("/api/activity/counts", async (SportarrDbContext db) =>
         .Where(dq => dq.Status != DownloadStatus.Imported)
         .CountAsync();
 
+    // Count pending imports ("No match found" / manual-import rows). Only the ones
+    // still awaiting action (Status == Pending) — which is exactly what GET
+    // /api/pending-imports returns and what the Activity > Queue tab shows. Accepted
+    // imports stay in the table as Status == Completed (and Importing/Rejected linger
+    // too); counting all of them inflated the sidebar badge with rows the user can't
+    // see or remove (the reported "queue is empty but the badge still shows 257").
+    var pendingImportCount = await db.PendingImports
+        .Where(pi => pi.Status == PendingImportStatus.Pending)
+        .CountAsync();
+
     // Count blocklist items
     var blocklistCount = await db.Blocklist.CountAsync();
 
     return Results.Ok(new
     {
         queueCount,
+        pendingImportCount,
         blocklistCount
     });
 });

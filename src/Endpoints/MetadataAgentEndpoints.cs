@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Sportarr.Api.Data;
 using Sportarr.Api.Models;
 using Sportarr.Api.Services;
+using Sportarr.Api.Startup;
 
 namespace Sportarr.Api.Endpoints;
 
@@ -223,13 +224,15 @@ public static class MetadataAgentEndpoints
         // Plex/Emby/Jellyfin plugins call {ApiUrl}/api/health and require
         // status == "healthy" before they'll accept a local instance, so this
         // must return the same shape the cloud does.
+        // Allow cross-origin browser probes (the plugin config pages' "Test
+        // Connection" button) to read this public, auth-exempt endpoint.
         app.MapGet("/api/health", () => Results.Ok(new
         {
             status = "healthy",
             version = Sportarr.Api.Version.AppVersion,
             build = Sportarr.Api.Version.GetFullVersion(),
             timestamp = DateTime.UtcNow
-        }));
+        })).RequireCors(ServiceCollectionExtensions.PublicProbeCorsPolicy);
 
         // Season poster proxy. The Jellyfin/Emby image providers build
         // {ApiUrl}/api/images/league/{id}/poster directly for season art, so

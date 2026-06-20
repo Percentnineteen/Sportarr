@@ -71,9 +71,11 @@ public class LibraryImportService
             var settings = await GetMediaManagementSettingsAsync();
 
             var searchOption = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var files = LibraryPathFilter.FilterExcluded(
-                    Directory.GetFiles(folderPath, "*.*", searchOption)
-                        .Where(f => VideoExtensions.Contains(Path.GetExtension(f).ToLower())))
+            var files = SampleFileFilter.FilterSamples(
+                    LibraryPathFilter.FilterExcluded(
+                        Directory.GetFiles(folderPath, "*.*", searchOption)
+                            .Where(f => VideoExtensions.Contains(Path.GetExtension(f).ToLower()))),
+                    folderPath)
                 .ToList();
 
             result.TotalFiles = files.Count;
@@ -579,7 +581,8 @@ public class LibraryImportService
         // explicit RootFolderId binding (set via the Add League modal),
         // falls back to the legacy free-space heuristic when the league
         // doesn't have one or the bound folder is missing/inaccessible.
-        var rootFolder = await GetRootFolderForLeagueAsync(settings, eventInfo.League, sourceFileInfo.Length);
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
+        var rootFolder = await GetRootFolderForLeagueAsync(settings, rootFolders, eventInfo.League, sourceFileInfo.Length);
 
         // Build destination path
         var destinationPath = rootFolder;
@@ -706,16 +709,16 @@ public class LibraryImportService
     /// the legacy free-space heuristic for legacy leagues without a
     /// binding or whose bound root has gone missing.
     /// </summary>
-    private Task<string> GetRootFolderForLeagueAsync(MediaManagementSettings settings, League? league, long fileSize)
+    private Task<string> GetRootFolderForLeagueAsync(MediaManagementSettings settings, List<RootFolder> rootFolders, League? league, long fileSize)
     {
-        if (settings.RootFolders == null || settings.RootFolders.Count == 0)
+        if (rootFolders == null || rootFolders.Count == 0)
         {
             throw new Exception("No root folders configured. Please add a root folder in Settings > Media Management.");
         }
 
         if (league?.RootFolderId is int boundId)
         {
-            var bound = settings.RootFolders.FirstOrDefault(rf => rf.Id == boundId);
+            var bound = rootFolders.FirstOrDefault(rf => rf.Id == boundId);
             if (bound != null && bound.Accessible)
             {
                 return Task.FromResult(bound.Path);
@@ -725,22 +728,22 @@ public class LibraryImportService
                 league.Id, league.Name, boundId);
         }
 
-        var rootFolders = settings.RootFolders
+        var accessibleRoots = rootFolders
             .Where(rf => rf.Accessible)
             .OrderByDescending(rf => rf.FreeSpace)
             .ToList();
 
-        if (rootFolders.Count == 0)
+        if (accessibleRoots.Count == 0)
         {
             throw new Exception("No accessible root folders configured. Please add a root folder in Settings > Media Management.");
         }
 
         var fileSizeMB = fileSize / 1024 / 1024;
-        var folder = rootFolders.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace);
+        var folder = accessibleRoots.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace);
 
         if (folder == null)
         {
-            folder = rootFolders.First();
+            folder = accessibleRoots.First();
             _logger.LogWarning("No root folder has enough free space, using folder with most space: {Path}", folder.Path);
         }
 
@@ -1050,7 +1053,6 @@ public class LibraryImportService
             // Create default settings with granular folder options
             settings = new MediaManagementSettings
             {
-                RootFolders = new List<RootFolder>(),
                 RenameFiles = true,
                 StandardFileFormat = "{Series} - {Season}{Episode}{Part} - {Event Title} - {Quality Full}",
                 // Granular folder settings - default: league/season folders enabled, event folders disabled
@@ -1069,14 +1071,7 @@ public class LibraryImportService
             await _db.SaveChangesAsync();
         }
 
-        // Load root folders from separate RootFolders table
-        var rootFolders = await _db.RootFolders.ToListAsync();
-        if (rootFolders.Any())
-        {
-            _diskSpaceService.RefreshLiveState(rootFolders);
-            settings.RootFolders = rootFolders;
-        }
-
+        // Root folders live in the RootFolders table (loaded via RootFolderLoader).
         return settings;
     }
 

@@ -129,8 +129,7 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
         // alone instead of marking them missing. This is the equivalent of
         // Sonarr's "skip cleanup when the series folder is missing" guard,
         // applied at the root-folder level.
-        var settings = await db.MediaManagementSettings.FirstOrDefaultAsync(cancellationToken);
-        var unreachableRoots = (settings?.RootFolders ?? new List<RootFolder>())
+        var unreachableRoots = (await db.RootFolders.ToListAsync(cancellationToken))
             .Where(rf => !string.IsNullOrEmpty(rf.Path) && !Directory.Exists(rf.Path))
             .Select(rf => rf.Path)
             .ToList();
@@ -474,9 +473,9 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
     /// </summary>
     private async Task DiscoverNewFilesAsync(SportarrDbContext db, CancellationToken cancellationToken)
     {
-        // Get root folders from media management settings
-        var settings = await db.MediaManagementSettings.FirstOrDefaultAsync(cancellationToken);
-        if (settings?.RootFolders == null || settings.RootFolders.Count == 0)
+        // Root folders live in the RootFolders table (the UI's source of truth).
+        var rootFolders = await db.RootFolders.ToListAsync(cancellationToken);
+        if (rootFolders.Count == 0)
         {
             _logger.LogWarning("[Disk Scan] No root folders configured — skipping file discovery. Configure root folders in Settings > Media Management.");
             return;
@@ -523,7 +522,7 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
         var videoExtensions = new HashSet<string>(SupportedExtensions.Video, StringComparer.OrdinalIgnoreCase);
         var discoveredCount = 0;
 
-        foreach (var rootFolder in settings.RootFolders)
+        foreach (var rootFolder in rootFolders)
         {
             if (cancellationToken.IsCancellationRequested) break;
 
@@ -540,6 +539,9 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                 // Skip recycle bin, dot folders, and system folders so recycled/system copies
                 // are never re-discovered as new files (the source of the "47 files vs 21" inflation).
                 files = LibraryPathFilter.FilterExcluded(files);
+                // Skip release sample clips so a stray preview is never suggested
+                // as a pending import for a real event.
+                files = SampleFileFilter.FilterSamples(files, rootFolder.Path);
 
                 foreach (var filePath in files)
                 {

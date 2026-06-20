@@ -167,10 +167,21 @@ public class SabnzbdClient
         content.Add(new StringContent("json"), "output");
         content.Add(new StringContent(category), "cat");
 
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            _logger.LogWarning(
+                "[SABnzbd] No category set for this grab, so SABnzbd will use its Default category and won't place the download in a per-category subfolder. Set a category on the download client AND define that category in SABnzbd (Config > Categories) with a Folder/Path.");
+        }
+
         if (!string.IsNullOrWhiteSpace(config.Directory))
         {
             content.Add(new StringContent(config.Directory), "dir");
-            _logger.LogInformation("[SABnzbd] Using directory override: {Directory}", config.Directory);
+            // Standard SABnzbd ignores a per-job directory: the output folder is
+            // determined by the category's configured Folder/Path, not by a 'dir'
+            // sent on the add request. Some SAB-compatible clients honor it, so we
+            // still send it, but warn rather than claim it took effect.
+            _logger.LogWarning(
+                "[SABnzbd] Directory override '{Directory}' was sent, but standard SABnzbd ignores a per-job directory and routes downloads by category (Config > Categories > Folder/Path). Configure the category folder in SABnzbd to control the destination.", config.Directory);
         }
 
         // Add the NZB file as raw bytes - this preserves the original encoding
@@ -986,10 +997,21 @@ public class SabnzbdClient
                 { "output", "json" }
             };
 
+            if (string.IsNullOrWhiteSpace(category))
+            {
+                _logger.LogWarning(
+                    "[SABnzbd] No category set for this grab, so SABnzbd will use its Default category and won't place the download in a per-category subfolder. Set a category on the download client AND define that category in SABnzbd (Config > Categories) with a Folder/Path.");
+            }
+
             if (!string.IsNullOrWhiteSpace(config.Directory))
             {
                 formData["dir"] = config.Directory;
-                _logger.LogInformation("[SABnzbd] Using directory override: {Directory}", config.Directory);
+                // Standard SABnzbd ignores a per-job directory: the output folder is
+                // determined by the category's configured Folder/Path, not by a 'dir'
+                // sent on the add request. Some SAB-compatible clients honor it, so we
+                // still send it, but warn rather than claim it took effect.
+                _logger.LogWarning(
+                    "[SABnzbd] Directory override '{Directory}' was sent, but standard SABnzbd ignores a per-job directory and routes downloads by category (Config > Categories > Folder/Path). Configure the category folder in SABnzbd to control the destination.", config.Directory);
             }
 
             // Add authentication

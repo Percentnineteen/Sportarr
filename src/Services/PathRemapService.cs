@@ -78,8 +78,7 @@ public class PathRemapService
         // Locate every configured root folder. The new prefix has to be
         // somewhere under one of them; otherwise the admin needs to add a
         // root folder before any remap is meaningful.
-        var settings = await _db.MediaManagementSettings.FirstOrDefaultAsync(ct);
-        var rootFolders = (settings?.RootFolders ?? new List<Models.RootFolder>())
+        var rootFolders = (await _db.RootFolders.ToListAsync(ct))
             .Where(rf => !string.IsNullOrEmpty(rf.Path) && Directory.Exists(rf.Path))
             .Select(rf => rf.Path)
             .ToList();

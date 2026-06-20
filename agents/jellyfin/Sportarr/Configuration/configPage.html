@@ -84,7 +84,9 @@
                     Dashboard.showLoadingMsg();
 
                     ApiClient.getPluginConfiguration(SportarrConfig.pluginUniqueId).then(function (config) {
-                        config.SportarrApiUrl = document.querySelector('#txtApiUrl').value;
+                        // Trim whitespace and any trailing slashes so the stored URL
+                        // doesn't become "http://host:1867//api/..." when used.
+                        config.SportarrApiUrl = document.querySelector('#txtApiUrl').value.trim().replace(/\/+$/, '');
                         config.EnableDebugLogging = document.querySelector('#chkDebugLogging').checked;
                         config.ImageCacheHours = parseInt(document.querySelector('#txtCacheHours').value) || 24;
 
@@ -98,7 +100,8 @@
 
             document.querySelector('#btnTestConnection')
                 .addEventListener('click', function () {
-                    var apiUrl = document.querySelector('#txtApiUrl').value;
+                    // Trim trailing slashes so the probe URL doesn't get a double slash.
+                    var apiUrl = document.querySelector('#txtApiUrl').value.trim().replace(/\/+$/, '');
                     var resultDiv = document.querySelector('#connectionResult');
 
                     resultDiv.innerHTML = '<span style="color: #888;">Testing connection...</span>';

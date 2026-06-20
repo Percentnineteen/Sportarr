@@ -18,6 +18,13 @@ namespace Sportarr.Api.Startup;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    /// CORS policy name for public, unauthenticated endpoints that browser-based
+    /// plugin config pages probe cross-origin (e.g. /api/health). Apply with
+    /// .RequireCors(ServiceCollectionExtensions.PublicProbeCorsPolicy).
+    /// </summary>
+    public const string PublicProbeCorsPolicy = "PublicProbe";
+
     public static IServiceCollection AddSportarrHttpClients(this IServiceCollection services)
     {
         // Default named HttpClient used by services that don't configure their own.
@@ -279,7 +286,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<CustomFormatService>();
         services.AddScoped<TrashGuideSyncService>();
         services.AddScoped<SeasonSearchService>();
-        services.AddScoped<EventMappingService>();
 
         return services;
     }
@@ -345,7 +351,6 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<PendingReleaseReaperService>();
         services.AddHostedService<TvScheduleSyncService>();
         services.AddHostedService<FileWatcherService>();
-        services.AddHostedService<EventMappingSyncBackgroundService>();
         // LeagueEventAutoSyncService (24h full league walk) is deliberately
         // NOT registered on this branch: the hub changes poller below is
         // being soak-tested as the sole ongoing event ingest. Initial league
@@ -435,6 +440,21 @@ public static class ServiceCollectionExtensions
                           .AllowCredentials();
                 }
             });
+
+            // Permissive policy for the few public, unauthenticated endpoints
+            // that media-server plugin config pages probe cross-origin from the
+            // browser — e.g. the Jellyfin/Emby/Plex "Test Connection" button
+            // fetching /api/health from the media server's own web UI, which is
+            // a different origin/port than the Sportarr instance. The default
+            // policy only allows the local dev UI origins, so that fetch was
+            // blocked by CORS even though the configured URL was reachable (the
+            // plugin itself works, since it calls server-to-server with no CORS).
+            // No credentials, and applied only to specific endpoints via
+            // RequireCors, so this does not widen the authenticated API surface.
+            options.AddPolicy(PublicProbeCorsPolicy, policy =>
+                policy.AllowAnyOrigin()
+                      .AllowAnyMethod()
+                      .AllowAnyHeader());
         });
 
         return services;

@@ -194,8 +194,7 @@ public class RestoreReconciliationService
 
     private async Task<int> CountUnreachableAsync(CancellationToken ct)
     {
-        var settings = await _db.MediaManagementSettings.FirstOrDefaultAsync(ct);
-        var unreachable = (settings?.RootFolders ?? new List<RootFolder>())
+        var unreachable = (await _db.RootFolders.ToListAsync(ct))
             .Where(rf => !string.IsNullOrEmpty(rf.Path) && !Directory.Exists(rf.Path))
             .Select(rf => rf.Path
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)

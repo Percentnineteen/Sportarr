@@ -278,6 +278,7 @@ export const useSearchQueueStatus = () => {
 // Activity counts (for sidebar badges)
 export interface ActivityCounts {
   queueCount: number;
+  pendingImportCount: number;
   blocklistCount: number;
 }
 

@@ -386,12 +386,18 @@ var outputTemplate = "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{Level:u3}] {Me
 // Create sanitizing formatter to protect sensitive data
 var sanitizingFormatter = new SanitizingTextFormatter(outputTemplate);
 
-// Configure Serilog:
-// - Main log file: sportarr.txt with rolling by size and day
-// - Retained file count: 10 files (manageable storage)
-// - File size: 10MB per file (reduces number of files created)
-// - When file reaches size limit, rolls to sportarr_001.txt, sportarr_002.txt, etc.
-// - Oldest files are automatically deleted when limit is reached
+// Configure Serilog. The file sink is tuned to be gentle on the user's disk:
+// one file per day (sportarr.txt -> sportarr_YYYYMMDD.txt), writes BUFFERED and
+// flushed every few seconds instead of fsynced on every line, and a bounded
+// number of files retained.
+//
+// This replaces an earlier config that opened the file with shared access and
+// flushed to disk every second. Shared access forces a write/seek per event
+// AND silently disables retainedFileCountLimit, so on a busy instance the log
+// folder grew without bound (one report: ~160 files in a single day) while the
+// per-second fsync hammered the drive. Sportarr runs as a single process, so it
+// does not need shared access; dropping it lets retention prune old files and
+// lets the sink batch writes via `buffered`.
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Is(configuredLogLevel)      // Use configured log level
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
@@ -403,11 +409,11 @@ Log.Logger = new LoggerConfiguration()
         formatter: sanitizingFormatter,
         path: Path.Combine(logsPath, "sportarr.txt"),
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 10,           // Keep only 10 files for storage management
-        fileSizeLimitBytes: 10485760,         // 10MB per file (reduces file count)
-        rollOnFileSizeLimit: true,            // Roll when size limit reached
-        shared: true,                         // Allow multiple processes to write
-        flushToDiskInterval: TimeSpan.FromSeconds(1))
+        retainedFileCountLimit: 10,           // ~10 days of logs; oldest auto-pruned
+        fileSizeLimitBytes: 52428800,         // 50MB safety cap before a same-day roll
+        rollOnFileSizeLimit: true,
+        buffered: true,                       // batch writes; flushed on the interval below
+        flushToDiskInterval: TimeSpan.FromSeconds(5))
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
@@ -452,8 +458,17 @@ AgentInstaller.Install(dataPath, isWindowsPlatform);
 
 // Configure middleware pipeline
 
-// URL Base support for reverse proxy setups (e.g., /sportarr)
-// Must be configured early in the pipeline, before routing
+// URL Base support for reverse proxy setups (e.g., /sportarr).
+// Must be configured early in the pipeline, before routing.
+//
+// The normalized value is captured once at startup and reused for BOTH the
+// path stripping here AND the index.html asset rewriting / initialize.json
+// below, so the app can never end up half-applied. (Previously UsePathBase was
+// fixed at startup while the asset rewriting re-read the config per request, so
+// changing URL Base without restarting rewrote asset links to /sportarr while
+// the prefix was never stripped — which broke even direct host:port access
+// until a restart.) Changing URL Base therefore requires a restart, as in the
+// other *arr apps; the Settings page says so.
 string configuredUrlBase = "";
 {
     var configService = app.Services.GetRequiredService<Sportarr.Api.Services.ConfigService>();
@@ -552,16 +567,13 @@ app.Use(async (context, next) =>
         {
             var html = await File.ReadAllTextAsync(indexPath);
 
-            // Get the configured URL base
+            // Use the startup-captured URL base so the rewritten asset paths
+            // always agree with UsePathBase above (changing it needs a restart).
             var configService = context.RequestServices.GetRequiredService<Sportarr.Api.Services.ConfigService>();
             var config = await configService.GetConfigAsync();
-            var urlBase = config.UrlBase?.Trim() ?? "";
+            var urlBase = configuredUrlBase;
             if (!string.IsNullOrEmpty(urlBase))
             {
-                if (!urlBase.StartsWith("/"))
-                    urlBase = "/" + urlBase;
-                urlBase = urlBase.TrimEnd('/');
-
                 // Inject the full window.Sportarr object before the first script tag.
                 // axios.create() in the frontend reads urlBase + apiRoot at module-load
                 // time, and the X-Api-Key interceptor reads apiKey per request. Setting
@@ -618,14 +630,9 @@ app.MapGet("/initialize.json", async (HttpContext httpContext, Sportarr.Api.Serv
 {
     // Get API key from config.xml (same source that authentication uses)
     var config = await configService.GetConfigAsync();
-    // Ensure urlBase is properly formatted (starts with / if not empty, no trailing /)
-    var urlBase = config.UrlBase?.Trim() ?? "";
-    if (!string.IsNullOrEmpty(urlBase))
-    {
-        if (!urlBase.StartsWith("/"))
-            urlBase = "/" + urlBase;
-        urlBase = urlBase.TrimEnd('/');
-    }
+    // Use the startup-captured URL base so the value the SPA bootstraps with
+    // matches the path stripping (UsePathBase). Changing it requires a restart.
+    var urlBase = configuredUrlBase;
     // Only expose the master API key to callers who are allowed to have it. When UI auth
     // is enabled (forms/basic/external), an unauthenticated client must NOT be able to read
     // the key here, or it would defeat the auth the user turned on. The web UI receives the
@@ -790,9 +797,6 @@ app.MapSonarrEpisodeFileEndpoints();
 app.MapSonarrConfigEndpoints();
 app.MapSonarrIndexerEndpoints();
 app.MapSonarrDownloadClientEndpoint();
-
-// Event mapping (Sportarr-API powered release name matching) -------------
-app.MapEventMappingEndpoints();
 
 // Fallback to index.html for SPA routing
 app.MapFallbackToFile("index.html");

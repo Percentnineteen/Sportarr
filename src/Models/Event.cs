@@ -568,7 +568,15 @@ public class EventResponse
             Broadcast = evt.Broadcast,
             Monitored = evt.Monitored,
             MonitoredParts = evt.MonitoredParts,
-            HasFile = evt.HasFile,
+            // Derive the badge from the files we actually return rather than
+            // trusting only the denormalized HasFile flag. The two can drift
+            // apart — e.g. an import that is interrupted after the file lands on
+            // disk, or the file watcher flipping the flag off — which showed up
+            // as an event whose "Downloaded" badge was missing even though the
+            // "All Files" list (which reads EventFiles directly) listed the file.
+            // OR-ing keeps it safe when Files isn't eager-loaded: the flag still
+            // wins, we only ever ADD "downloaded" when a real file exists.
+            HasFile = evt.HasFile || evt.Files.Any(f => f.Exists),
             FilePath = evt.FilePath,
             FileSize = evt.FileSize,
             Quality = evt.Quality,

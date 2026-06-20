@@ -718,9 +718,22 @@ public class NotificationService : INotificationService
             string refreshSectionUrl;
             if (!string.IsNullOrEmpty(serverPath) && usePartialScan)
             {
-                var encodedPath = HttpUtility.UrlEncode(serverPath);
+                // Plex's partial scan refreshes a DIRECTORY, not a file. serverPath
+                // is the imported file's path, so scan its containing folder — passing
+                // the file path makes Plex scan nothing and the new event never appears
+                // until a manual library scan. Extract the directory without
+                // Path.GetDirectoryName so a Linux server path isn't mangled when
+                // Sportarr runs on Windows (and vice versa).
+                var scanDir = serverPath;
+                var lastSep = serverPath.LastIndexOfAny(new[] { '/', '\\' });
+                if (lastSep > 0)
+                {
+                    scanDir = serverPath.Substring(0, lastSep);
+                }
+
+                var encodedPath = HttpUtility.UrlEncode(scanDir);
                 refreshSectionUrl = $"{baseUrl}/library/sections/{sectionId}/refresh?path={encodedPath}&X-Plex-Token={apiKey}";
-                _logger.LogInformation("[Plex] Triggering partial scan for section {Section} path: {Path}", sectionId, serverPath);
+                _logger.LogInformation("[Plex] Triggering partial scan for section {Section} path: {Path}", sectionId, scanDir);
             }
             else
             {

@@ -95,7 +95,7 @@ interface SkippedIndexer {
 
 interface HistoryItem {
   id: number;
-  type: 'import' | 'grabbed' | 'completed' | 'failed' | 'warning' | 'blocklist';
+  type: 'import' | 'grabbed' | 'completed' | 'failed' | 'warning' | 'blocklist' | 'deleted';
   sourcePath: string;
   destinationPath?: string;
   quality?: string;

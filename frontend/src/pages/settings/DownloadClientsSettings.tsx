@@ -49,6 +49,9 @@ interface RemotePathMapping {
 const clientTypeMap: Record<string, number> = {
   'qBittorrent': 0,
   'Transmission': 1,
+  // Vuze speaks the Transmission RPC API, so it is a Transmission-type client.
+  // Without this it fell through to 0 (qBittorrent) and never worked.
+  'Vuze': 1,
   'Deluge': 2,
   'rTorrent': 3,
   'uTorrent': 4,
@@ -119,7 +122,7 @@ const downloadClientTemplates: ClientTemplate[] = [
     protocol: 'torrent',
     description: 'Fast and easy torrent client',
     defaultPort: 9091,
-    fields: ['host', 'port', 'useSsl', 'urlBase', 'username', 'password', 'category', 'directory', 'initialState', 'removeCompletedDownloads', 'removeFailedDownloads']
+    fields: ['host', 'port', 'useSsl', 'urlBase', 'username', 'password', 'category', 'directory', 'postImportCategory', 'initialState', 'removeCompletedDownloads', 'removeFailedDownloads']
   },
   {
     name: 'Deluge',

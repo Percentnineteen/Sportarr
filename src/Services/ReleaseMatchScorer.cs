@@ -218,6 +218,37 @@ public class ReleaseMatchScorer
             { "Sokol" } },
     };
 
+    // Distinct CIRCUITS in countries that host more than one race in a season, so
+    // the country-level location check can't tell them apart (F1: USA has Miami,
+    // Austin and Las Vegas; Spain has Barcelona and Madrid; Italy has Monza and
+    // Imola - plus MotoGP's extra Spanish/Italian rounds). Each inner array is one
+    // circuit and lists only its STABLE city/circuit aliases. Deliberately NO
+    // country demonyms ("Spanish", "Italian", "United States") and NO bare country
+    // names: a demonym like "Spanish GP" maps to a DIFFERENT circuit over time
+    // (Barcelona pre-2026, Madrid from 2026), so hardcoding it would break older
+    // seasons. Instead the event's actual circuit comes from its own Venue/Location
+    // (see GetLocationMatchScore), which is era-correct by definition; these groups
+    // only collapse alias spellings (Austin == COTA, Barcelona == Catalunya) so a
+    // release's city and the event's venue line up. Word-boundary matched.
+    private static readonly string[][] MotorsportRaceGroups = new[]
+    {
+        // United States
+        new[] { "miami", "miami gardens" },
+        new[] { "austin", "cota", "circuit of the americas" },
+        new[] { "las vegas", "vegas" },
+        // Spain
+        new[] { "barcelona", "catalunya", "montmelo" },
+        new[] { "madrid", "madring" },
+        new[] { "jerez" },
+        new[] { "valencia", "ricardo tormo" },
+        new[] { "aragon", "motorland" },
+        // Italy
+        new[] { "monza" },
+        new[] { "imola" },
+        new[] { "mugello" },
+        new[] { "misano" },
+    };
+
     // Compiled hot-path regexes. Every CalculateMatchScoreInternal call walks at
     // least four or five of these per release, and a search may evaluate thousands
     // of releases. Pre-compiling once avoids re-parsing the same patterns on every
@@ -254,7 +285,11 @@ public class ReleaseMatchScorer
     // Fighting-event identity regexes - hit per release for UFC/Bellator/PFL events.
     private static readonly Regex _dwcsEventRegex = new(@"(?:dana\s*white|dwcs|contender\s*series).*?(?:s(\d+)e(\d+)|season\s*(\d+).*?episode\s*(\d+))", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex _dwcsReleaseRegex = new(@"(?:dana\s*white|dwcs|contender\s*series).*?s(\d+)e(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex _fightingNumberRegex = new(@"(?:ufc|bellator|pfl)\s*(?:fight\s*night\s*)?(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    // Event number after the org keyword. The number can sit a few words after the
+    // org ("UFC Freedom 250", "UFC on ESPN 50"), so allow a short run of non-digits
+    // in between. Capped at 1-3 digits with a trailing boundary so it never latches
+    // onto a 4-digit year ("UFC 2026") or a resolution tag ("1080p", "4K").
+    private static readonly Regex _fightingNumberRegex = new(@"\b(?:ufc|bellator|pfl)\b[^\d]{0,25}?(\d{1,3})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex _fightNightRegex = new(@"fight\s*night", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex _vsFightersRegex = new(@"[:\s]([a-z]+)\s*(?:vs|v)\s*([a-z]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
@@ -281,6 +316,43 @@ public class ReleaseMatchScorer
         if (_wordBoundaryCache.Count < WordBoundaryCacheMax)
             _wordBoundaryCache.TryAdd(token, fresh);
         return fresh;
+    }
+
+    /// <summary>
+    /// Whole-word containment check for motorsport location / alias detection.
+    /// Plain String.Contains let short circuit aliases match INSIDE unrelated
+    /// words: Belgium's "Spa" inside "Spain"/"Spanish", and Britain's "UK" inside
+    /// "Suzuka". That false-flagged the correct race as a different location and
+    /// hard-rejected it (score 0). The token is normalized the same way as the
+    /// haystack so multi-word aliases ("Red Bull Ring") still line up.
+    /// </summary>
+    private bool ContainsLocationWord(string normalizedHaystack, string token)
+    {
+        var normalizedToken = NormalizeTitle(token);
+        if (string.IsNullOrEmpty(normalizedToken)) return false;
+        return GetWordBoundaryRegex(normalizedToken).IsMatch(normalizedHaystack);
+    }
+
+    /// <summary>
+    /// Identify which same-country distinct-race groups a title belongs to (see
+    /// MotorsportRaceGroups). Returns the set of matching group indices; empty
+    /// when the title names no multi-race-country circuit (the common case).
+    /// </summary>
+    private HashSet<int> GetMotorsportRaceGroups(string normalizedText)
+    {
+        var groups = new HashSet<int>();
+        for (int i = 0; i < MotorsportRaceGroups.Length; i++)
+        {
+            foreach (var token in MotorsportRaceGroups[i])
+            {
+                if (ContainsLocationWord(normalizedText, token))
+                {
+                    groups.Add(i);
+                    break;
+                }
+            }
+        }
+        return groups;
     }
 
     /// <summary>
@@ -443,7 +515,7 @@ public class ReleaseMatchScorer
         // This prevents "Qatar Grand Prix" from matching "Brazil Grand Prix" releases
         if (IsMotorsport(eventSportPrefix))
         {
-            var locationScore = GetLocationMatchScore(releaseTitle, evt.Title);
+            var locationScore = GetLocationMatchScore(releaseTitle, evt);
             if (locationScore < 0)
                 return 0; // Wrong location - reject immediately
             score += locationScore; // 0-25 points for matching locations
@@ -739,10 +811,35 @@ public class ReleaseMatchScorer
     /// Returns NEGATIVE score if release contains a DIFFERENT known motorsport location.
     /// This prevents "Qatar Grand Prix" from matching "Brazil Grand Prix Sprint" releases.
     /// </summary>
-    private int GetLocationMatchScore(string releaseTitle, string eventTitle)
+    private int GetLocationMatchScore(string releaseTitle, Event evt)
     {
+        var eventTitle = evt.Title ?? "";
         var normalizedRelease = NormalizeTitle(releaseTitle);
         var normalizedEvent = NormalizeTitle(eventTitle);
+
+        // SAME-COUNTRY DISTINCT-CIRCUIT resolution, using the event's own circuit.
+        // Countries can host several races in one season (USA: Miami/Austin/Vegas;
+        // Spain: Barcelona/Madrid; Italy: Monza/Imola), which the country-level
+        // check below can't tell apart. We take the event's real circuit from its
+        // Venue/Location (era-correct: Barcelona for a 2015 Spanish GP, Madrid for a
+        // 2026 one - no hardcoded guess), plus its title, and compare against the
+        // circuit named in the release. This ONLY engages when the RELEASE names a
+        // specific circuit; a broad/demonym release ("Spanish GP", "Spain") names no
+        // circuit and falls through to the country-level match, so it still matches.
+        var releaseCircuits = GetMotorsportRaceGroups(normalizedRelease);
+        if (releaseCircuits.Count > 0)
+        {
+            var eventCircuits = GetMotorsportRaceGroups(
+                NormalizeTitle($"{eventTitle} {evt.Venue} {evt.Location}"));
+            if (eventCircuits.Count > 0)
+            {
+                // Release names a circuit and we know the event's circuit. If they
+                // disagree it's the wrong race; if they agree it's a strong, definite
+                // location match (so the correctly-named file is never ranked below a
+                // broadly-named one).
+                return releaseCircuits.Overlaps(eventCircuits) ? 25 : -50;
+            }
+        }
 
         // CRITICAL: ALWAYS check for conflicting locations FIRST
         // Even if "Sprint" matches, "Brazil Sprint" should NOT match "Qatar Sprint"
@@ -1005,14 +1102,14 @@ public class ReleaseMatchScorer
         var eventLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (location, aliases) in motorsportLocations)
         {
-            if (normalizedEvent.Contains(location, StringComparison.OrdinalIgnoreCase))
+            if (ContainsLocationWord(normalizedEvent, location))
             {
                 eventLocations.Add(location);
                 continue;
             }
             foreach (var alias in aliases)
             {
-                if (normalizedEvent.Contains(alias, StringComparison.OrdinalIgnoreCase))
+                if (ContainsLocationWord(normalizedEvent, alias))
                 {
                     eventLocations.Add(location);
                     break;
@@ -1061,7 +1158,7 @@ public class ReleaseMatchScorer
                 continue;
 
             // Check if this different location appears in the release
-            if (normalizedRelease.Contains(location, StringComparison.OrdinalIgnoreCase))
+            if (ContainsLocationWord(normalizedRelease, location))
             {
                 // Before flagging as conflict, check if this release location is a PARENT
                 // of any event location in the hierarchy
@@ -1077,7 +1174,7 @@ public class ReleaseMatchScorer
 
             foreach (var alias in aliases)
             {
-                if (normalizedRelease.Contains(alias, StringComparison.OrdinalIgnoreCase))
+                if (ContainsLocationWord(normalizedRelease, alias))
                 {
                     // Same check for aliases
                     if (LocationHierarchy.TryGetValue(location, out var childLocations))
@@ -1218,6 +1315,10 @@ public class ReleaseMatchScorer
         var normalizedEvent = NormalizeTitle(eventTitle);
         var score = 0;
         var hasEventIdentifier = false;
+        // Tracks whether the release matched something event-specific (the event
+        // number, a headliner fighter, or a distinctive title word) rather than
+        // just the org and year. Used by the relevance floor at the bottom.
+        var releaseMatchedIdentity = false;
 
         // === DANA WHITE'S CONTENDER SERIES (DWCS) - Season/Episode based ===
         // Event title: "Dana White's Contender Series S07E01" or "DWCS Season 7 Episode 1"
@@ -1237,7 +1338,10 @@ public class ReleaseMatchScorer
                 var releaseEpisode = dwcsReleaseMatch.Groups[2].Value;
 
                 if (releaseSeason == eventSeason && releaseEpisode == eventEpisode)
+                {
                     score += 30; // Strong match - correct season and episode
+                    releaseMatchedIdentity = true;
+                }
                 else if (releaseSeason == eventSeason)
                     score -= 20; // Same season but wrong episode
                 else
@@ -1271,6 +1375,7 @@ public class ReleaseMatchScorer
                 if (releaseNumber == eventNumber)
                 {
                     // Numbers match - but verify Fight Night vs PPV type matches
+                    releaseMatchedIdentity = true;
                     if (eventIsFightNight == releaseIsFightNight)
                         score += 25; // Perfect match
                     else
@@ -1278,14 +1383,16 @@ public class ReleaseMatchScorer
                 }
                 else
                 {
-                    score -= 30; // Wrong event number - definitely wrong event
+                    // Wrong event number - a different card. e.g. searching "UFC 250"
+                    // and getting "Road to UFC 5" (number 5) or a different week's
+                    // "UFC 318". The number is the strongest identity signal, so reject.
+                    return -50;
                 }
             }
-            else
-            {
-                // Event has a number but release doesn't - wrong release type
-                return -40;
-            }
+            // else: the release carries no number of its own. Don't reject outright —
+            // it may be named by its headliners instead ("UFC.Topuria.vs.Gaethje").
+            // Let the fighter / distinctive-word matching below decide, backed by the
+            // relevance floor.
         }
 
         // === Fighter name matching (for events named by headliners) ===
@@ -1301,9 +1408,15 @@ public class ReleaseMatchScorer
             var hasFighter2 = normalizedRelease.Contains(fighter2, StringComparison.OrdinalIgnoreCase);
 
             if (hasFighter1 && hasFighter2)
+            {
                 score += 15; // Both fighters match
+                releaseMatchedIdentity = true;
+            }
             else if (hasFighter1 || hasFighter2)
+            {
                 score += 5; // One fighter matches (might be on the card)
+                releaseMatchedIdentity = true;
+            }
         }
 
         // === Generic term matching (fallback for non-standard naming) ===
@@ -1311,11 +1424,26 @@ public class ReleaseMatchScorer
             .Where(w => w.Length > 3 && !IsCommonWord(w) && !IsFightingCommonWord(w))
             .ToList();
 
-        if (eventWords.Count > 0 && score == 0)
+        if (eventWords.Count > 0)
         {
             var matchCount = eventWords.Count(w => normalizedRelease.Contains(w, StringComparison.OrdinalIgnoreCase));
-            score += (int)(10.0 * matchCount / eventWords.Count);
+            if (matchCount > 0)
+            {
+                releaseMatchedIdentity = true;
+                if (score == 0)
+                    score += (int)(10.0 * matchCount / eventWords.Count);
+            }
         }
+
+        // === Relevance floor ===
+        // If the event has a usable identity (a number, headliner fighters, or
+        // distinctive title words) but the release matched NONE of it, the release
+        // only shares the org and the year - a different event. Reject it. This is
+        // what stops a broad fallback query like "UFC 2026" from grabbing unrelated
+        // cards (e.g. "Road to UFC 5 EP02") for "UFC Freedom 250 Topuria vs Gaethje".
+        var eventHasIdentity = hasEventIdentifier || vsMatch.Success || eventWords.Count > 0;
+        if (eventHasIdentity && !releaseMatchedIdentity)
+            return -50;
 
         return score;
     }

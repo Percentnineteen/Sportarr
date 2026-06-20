@@ -121,23 +121,23 @@ const notificationTemplates: NotificationTemplate[] = [
   {
     name: 'Plex Media Server',
     implementation: 'Plex',
-    description: 'Refresh Plex library when files are imported',
+    description: 'Refresh Plex library when files are imported or deleted',
     icon: '🎬',
-    fields: ['host', 'apiKey', 'updateLibrary', 'usePartialScan', 'onDownload', 'onUpgrade', 'onRename']
+    fields: ['host', 'apiKey', 'updateLibrary', 'usePartialScan', 'pathMapFrom', 'pathMapTo', 'onDownload', 'onUpgrade', 'onRename', 'onEventFileDelete']
   },
   {
     name: 'Jellyfin',
     implementation: 'Jellyfin',
-    description: 'Refresh Jellyfin library when files are imported',
+    description: 'Refresh Jellyfin library when files are imported or deleted',
     icon: '🎞️',
-    fields: ['host', 'apiKey', 'updateLibrary', 'usePartialScan', 'onDownload', 'onUpgrade', 'onRename']
+    fields: ['host', 'apiKey', 'updateLibrary', 'usePartialScan', 'pathMapFrom', 'pathMapTo', 'onDownload', 'onUpgrade', 'onRename', 'onEventFileDelete']
   },
   {
     name: 'Emby',
     implementation: 'Emby',
-    description: 'Refresh Emby library when files are imported',
+    description: 'Refresh Emby library when files are imported or deleted',
     icon: '📺',
-    fields: ['host', 'apiKey', 'updateLibrary', 'usePartialScan', 'onDownload', 'onUpgrade', 'onRename']
+    fields: ['host', 'apiKey', 'updateLibrary', 'usePartialScan', 'pathMapFrom', 'pathMapTo', 'onDownload', 'onUpgrade', 'onRename', 'onEventFileDelete']
   }
 ];
 
@@ -453,6 +453,9 @@ export default function NotificationsSettings({ showAdvanced = false }: Notifica
                       )}
                       {notification.onRename && (
                         <span className="px-2 py-1 bg-purple-900/30 text-purple-400 rounded">On Rename</span>
+                      )}
+                      {notification.onEventFileDelete && (
+                        <span className="px-2 py-1 bg-rose-900/30 text-rose-400 rounded">On Delete</span>
                       )}
                       {notification.onHealthIssue && (
                         <span className="px-2 py-1 bg-red-900/30 text-red-400 rounded">Health Issues</span>
@@ -994,6 +997,38 @@ export default function NotificationsSettings({ showAdvanced = false }: Notifica
                             <p className="text-xs text-gray-500">Only scan the specific folder (faster). Disable to scan entire library.</p>
                           </div>
                         </label>
+                      </div>
+                    )}
+
+                    {selectedTemplate?.fields.includes('pathMapFrom') && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-gray-400">
+                          Path mapping (optional). Only needed when {selectedTemplate?.implementation} sees your
+                          media at a different path than Sportarr does (e.g. different Docker volume mounts).
+                          Leave both empty when the paths match.
+                        </p>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-300 mb-2">Path Map From (Sportarr path)</label>
+                          <input
+                            type="text"
+                            value={formData.pathMapFrom || ''}
+                            onChange={(e) => handleFormChange('pathMapFrom', e.target.value)}
+                            className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
+                            placeholder="/Data/Media/Sports"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">The library path as Sportarr sees it (where it imports files).</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-300 mb-2">Path Map To ({selectedTemplate?.implementation} path)</label>
+                          <input
+                            type="text"
+                            value={formData.pathMapTo || ''}
+                            onChange={(e) => handleFormChange('pathMapTo', e.target.value)}
+                            className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
+                            placeholder="/media/Sports"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">The same library path as {selectedTemplate?.implementation} sees it.</p>
+                        </div>
                       </div>
                     )}
                   </div>

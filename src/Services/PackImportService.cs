@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -322,7 +323,7 @@ public class PackImportService
         // this, a caller-controlled path (e.g. /data/media) would let pack-import recursively
         // delete media anywhere the process can write. If the path is not contained, we keep
         // importing matches but refuse to delete.
-        if (deleteUnmatched && !dryRun && !await IsPathWithinAllowedBaseAsync(downloadPath, settings))
+        if (deleteUnmatched && !dryRun && !await IsPathWithinAllowedBaseAsync(downloadPath))
         {
             _logger.LogWarning("[Pack Import] Refusing to delete unmatched files: {Path} is not inside a configured root folder or download directory", downloadPath);
             result.Errors.Add("Unmatched files were not deleted: the path is not inside a configured root folder or download directory.");
@@ -774,7 +775,8 @@ public class PackImportService
 
         // Build destination path. Prefer the league's bound RootFolderId
         // when set, fall back to the legacy free-space heuristic otherwise.
-        var rootFolder = GetRootFolderForLeague(settings, eventInfo.League, fileInfo.Length);
+        var rootFolders = await RootFolderLoader.LoadAsync(_db, _diskSpaceService);
+        var rootFolder = GetRootFolderForLeague(settings, rootFolders, eventInfo.League, fileInfo.Length);
         var destinationPath = await BuildDestinationPath(settings, eventInfo, parsed, fileInfo.Extension, rootFolder);
 
         _logger.LogDebug("[Pack Import] Destination path: {Path}", destinationPath);
@@ -960,14 +962,14 @@ public class PackImportService
     /// explicit RootFolderId binding stored on the league, falls back to
     /// free-space selection for legacy leagues without one.
     /// </summary>
-    private string GetRootFolderForLeague(MediaManagementSettings settings, League? league, long fileSize)
+    private string GetRootFolderForLeague(MediaManagementSettings settings, List<RootFolder> rootFolders, League? league, long fileSize)
     {
-        if (settings.RootFolders == null || settings.RootFolders.Count == 0)
+        if (rootFolders == null || rootFolders.Count == 0)
             throw new Exception("No root folders configured");
 
         if (league?.RootFolderId is int boundId)
         {
-            var bound = settings.RootFolders.FirstOrDefault(rf => rf.Id == boundId);
+            var bound = rootFolders.FirstOrDefault(rf => rf.Id == boundId);
             if (bound != null && bound.Accessible)
                 return bound.Path;
 
@@ -976,17 +978,17 @@ public class PackImportService
                 league.Id, league.Name, boundId);
         }
 
-        var rootFolders = settings.RootFolders
+        var accessibleRoots = rootFolders
             .Where(rf => rf.Accessible)
             .OrderByDescending(rf => rf.FreeSpace)
             .ToList();
 
-        if (rootFolders.Count == 0)
+        if (accessibleRoots.Count == 0)
             throw new Exception("No accessible root folders configured");
 
         var fileSizeMB = fileSize / 1024 / 1024;
-        var folder = rootFolders.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace)
-                     ?? rootFolders.First();
+        var folder = accessibleRoots.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace)
+                     ?? accessibleRoots.First();
 
         return folder.Path;
     }
@@ -999,7 +1001,6 @@ public class PackImportService
             // Create default settings with granular folder options
             settings = new MediaManagementSettings
             {
-                RootFolders = new List<RootFolder>(),
                 RenameFiles = true,
                 StandardFileFormat = "{Series} - {Season}{Episode}{Part} - {Event Title} - {Quality Full}",
                 // Granular folder settings - default: league/season folders enabled, event folders disabled
@@ -1020,13 +1021,7 @@ public class PackImportService
         settings.SkipFreeSpaceCheck = config.SkipFreeSpaceCheck;
         settings.MinimumFreeSpace = config.MinimumFreeSpace;
 
-        var rootFolders = await _db.RootFolders.ToListAsync();
-        if (rootFolders.Any())
-        {
-            _diskSpaceService.RefreshLiveState(rootFolders);
-            settings.RootFolders = rootFolders;
-        }
-
+        // Root folders live in the RootFolders table (loaded via RootFolderLoader).
         return settings;
     }
 
@@ -1036,13 +1031,19 @@ public class PackImportService
 
         if (File.Exists(path))
         {
-            if (IsVideoFile(path))
+            // Single file: judge only the filename so a parent folder that
+            // happens to contain "sample" can't exclude an explicit target.
+            if (IsVideoFile(path) && !SampleFileFilter.IsSample(Path.GetFileName(path)))
                 files.Add(path);
         }
         else if (Directory.Exists(path))
         {
-            files.AddRange(Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
-                .Where(IsVideoFile));
+            // Exclude release sample clips so a pack's per-event matching never
+            // hardlinks a tiny preview in place of the real session.
+            files.AddRange(SampleFileFilter.FilterSamples(
+                Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)
+                    .Where(IsVideoFile),
+                path));
         }
 
         return files;
@@ -1094,7 +1095,7 @@ public class PackImportService
     /// True when <paramref name="downloadPath"/> resolves to a location inside a configured
     /// root folder or download-client directory. Used to gate destructive (delete) operations.
     /// </summary>
-    private async Task<bool> IsPathWithinAllowedBaseAsync(string downloadPath, MediaManagementSettings settings)
+    private async Task<bool> IsPathWithinAllowedBaseAsync(string downloadPath)
     {
         string canonical;
         try
@@ -1107,12 +1108,10 @@ public class PackImportService
         }
 
         var allowedBases = new List<string>();
-        if (settings.RootFolders != null)
-        {
-            allowedBases.AddRange(settings.RootFolders
-                .Where(rf => !string.IsNullOrWhiteSpace(rf.Path))
-                .Select(rf => rf.Path));
-        }
+        var rootFolders = await _db.RootFolders.ToListAsync();
+        allowedBases.AddRange(rootFolders
+            .Where(rf => !string.IsNullOrWhiteSpace(rf.Path))
+            .Select(rf => rf.Path));
 
         var downloadDirs = await _db.DownloadClients
             .Where(c => c.Directory != null && c.Directory != "")
