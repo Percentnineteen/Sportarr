@@ -60,9 +60,9 @@ app.MapGet("/api/v3/indexer/schema", (ILogger<Program> logger) =>
             infoLink = "https://github.com/Prowlarr/Prowlarr",
             seedCriteria = new
             {
-                seedRatio = 1.0,
-                seedTime = 1,
-                seasonPackSeedTime = 1
+                seedRatio = (double?)null,
+                seedTime = (int?)null,
+                seasonPackSeedTime = (int?)null
             },
             tags = new int[] { },
             presets = new object[] { },
@@ -162,7 +162,7 @@ app.MapGet("/api/v3/indexer/schema", (ILogger<Program> logger) =>
                     label = "Seed Ratio",
                     helpText = "The ratio a torrent should reach before stopping, empty is download client's default",
                     helpLink = (string?)null,
-                    value = 1.0,
+                    value = (double?)null,
                     type = "number",
                     advanced = true,
                     hidden = "false"
@@ -174,7 +174,7 @@ app.MapGet("/api/v3/indexer/schema", (ILogger<Program> logger) =>
                     label = "Seed Time",
                     helpText = "The time a torrent should be seeded before stopping, empty is download client's default",
                     helpLink = (string?)null,
-                    value = 1,
+                    value = (int?)null,
                     type = "number",
                     advanced = true,
                     hidden = "false"
@@ -351,9 +351,9 @@ app.MapGet("/api/v3/indexer", async (SportarrDbContext db, ILogger<Program> logg
             new { order = 5, name = "animeStandardFormatSearch", label = "Anime Standard Format Search", helpText = "Search for anime using standard numbering", helpLink = (string?)null, value = false, type = "checkbox", advanced = true, hidden = "false" },
             new { order = 6, name = "minimumSeeders", label = "Minimum Seeders", helpText = "Minimum number of seeders required", helpLink = (string?)null, value = i.MinimumSeeders, type = "number", advanced = false, hidden = "false" },
             // Seed criteria fields required by Prowlarr's Sonarr integration (separate from seedCriteria object)
-            new { order = 7, name = "seedCriteria.seedRatio", label = "Seed Ratio", helpText = "The ratio a torrent should reach before stopping", helpLink = (string?)null, value = isTorznab ? (double?)(i.SeedRatio ?? 1.0) : null, type = "number", advanced = true, hidden = "false" },
-            new { order = 8, name = "seedCriteria.seedTime", label = "Seed Time", helpText = "The time a torrent should be seeded before stopping", helpLink = (string?)null, value = isTorznab ? (int?)(i.SeedTime ?? 1) : null, type = "number", advanced = true, hidden = "false" },
-            new { order = 9, name = "seedCriteria.seasonPackSeedTime", label = "Season Pack Seed Time", helpText = "The time a season pack torrent should be seeded", helpLink = (string?)null, value = isTorznab ? (int?)(i.SeasonPackSeedTime ?? 1) : null, type = "number", advanced = true, hidden = "false" },
+            new { order = 7, name = "seedCriteria.seedRatio", label = "Seed Ratio", helpText = "The ratio a torrent should reach before stopping", helpLink = (string?)null, value = isTorznab ? (double?)(i.SeedRatio ?? (double?)null) : null, type = "number", advanced = true, hidden = "false" },
+            new { order = 8, name = "seedCriteria.seedTime", label = "Seed Time", helpText = "The time a torrent should be seeded before stopping", helpLink = (string?)null, value = isTorznab ? (int?)(i.SeedTime ?? (int?)null) : null, type = "number", advanced = true, hidden = "false" },
+            new { order = 9, name = "seedCriteria.seasonPackSeedTime", label = "Season Pack Seed Time", helpText = "The time a season pack torrent should be seeded", helpLink = (string?)null, value = isTorznab ? (int?)(i.SeasonPackSeedTime ?? (int?)null) : null, type = "number", advanced = true, hidden = "false" },
             new { order = 10, name = "rejectBlocklistedTorrentHashesWhileGrabbing", label = "Reject Blocklisted Torrent Hashes While Grabbing", helpText = "If a torrent is blocked, also reject releases with the same torrent hash", helpLink = (string?)null, value = i.RejectBlocklistedTorrentHashes, type = "checkbox", advanced = true, hidden = "false" },
             new { order = 11, name = "additionalParameters", label = "Additional Parameters", helpText = "Additional Torznab/Newznab parameters", helpLink = (string?)null, value = i.AdditionalParameters ?? "", type = "textbox", advanced = true, hidden = "false" }
         };
@@ -382,9 +382,9 @@ app.MapGet("/api/v3/indexer", async (SportarrDbContext db, ILogger<Program> logg
             // Prowlarr expects seedCriteria as a top-level object (always present, values > 0 for torrents, null for usenet)
             seedCriteria = new
             {
-                seedRatio = i.Type == IndexerType.Torznab ? (double?)(i.SeedRatio ?? 1.0) : null,
-                seedTime = i.Type == IndexerType.Torznab ? (int?)(i.SeedTime ?? 1) : null,
-                seasonPackSeedTime = i.Type == IndexerType.Torznab ? (int?)(i.SeasonPackSeedTime ?? 1) : null
+                seedRatio = i.Type == IndexerType.Torznab ? (double?)(i.SeedRatio ?? (double?)null) : null,
+                seedTime = i.Type == IndexerType.Torznab ? (int?)(i.SeedTime ?? (int?)null) : null,
+                seasonPackSeedTime = i.Type == IndexerType.Torznab ? (int?)(i.SeasonPackSeedTime ?? (int?)null) : null
             },
             tags = i.Tags.ToArray(),
             fields = fields.ToArray(),
@@ -439,9 +439,9 @@ app.MapGet("/api/v3/indexer/{id:int}", async (int id, SportarrDbContext db, ILog
         // Prowlarr expects seedCriteria as a top-level object (always present, values > 0 for torrents, null for usenet)
         seedCriteria = new
         {
-            seedRatio = indexer.Type == IndexerType.Torznab ? (double?)(indexer.SeedRatio ?? 1.0) : null,
-            seedTime = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeedTime ?? 1) : null,
-            seasonPackSeedTime = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeasonPackSeedTime ?? 1) : null
+            seedRatio = indexer.Type == IndexerType.Torznab ? (double?)(indexer.SeedRatio ?? (double?)null) : null,
+            seedTime = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeedTime ?? (int?)null) : null,
+            seasonPackSeedTime = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeasonPackSeedTime ?? (int?)null) : null
         },
         tags = indexer.Tags.ToArray(),
         fields = new object[]
@@ -455,9 +455,9 @@ app.MapGet("/api/v3/indexer/{id:int}", async (int id, SportarrDbContext db, ILog
             new { order = 5, name = "animeStandardFormatSearch", label = "Anime Standard Format Search", helpText = "Search for anime using standard numbering", helpLink = (string?)null, value = false, type = "checkbox", advanced = true, hidden = "false" },
             new { order = 6, name = "minimumSeeders", label = "Minimum Seeders", helpText = "Minimum number of seeders required", helpLink = (string?)null, value = indexer.MinimumSeeders, type = "number", advanced = false, hidden = "false" },
             // Seed criteria fields required by Prowlarr's Sonarr integration
-            new { order = 7, name = "seedCriteria.seedRatio", label = "Seed Ratio", helpText = "The ratio a torrent should reach before stopping", helpLink = (string?)null, value = indexer.Type == IndexerType.Torznab ? (double?)(indexer.SeedRatio ?? 1.0) : null, type = "number", advanced = true, hidden = "false" },
-            new { order = 8, name = "seedCriteria.seedTime", label = "Seed Time", helpText = "The time a torrent should be seeded before stopping", helpLink = (string?)null, value = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeedTime ?? 1) : null, type = "number", advanced = true, hidden = "false" },
-            new { order = 9, name = "seedCriteria.seasonPackSeedTime", label = "Season Pack Seed Time", helpText = "The time a season pack torrent should be seeded", helpLink = (string?)null, value = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeasonPackSeedTime ?? 1) : null, type = "number", advanced = true, hidden = "false" },
+            new { order = 7, name = "seedCriteria.seedRatio", label = "Seed Ratio", helpText = "The ratio a torrent should reach before stopping", helpLink = (string?)null, value = indexer.Type == IndexerType.Torznab ? (double?)(indexer.SeedRatio ?? (double?)null) : null, type = "number", advanced = true, hidden = "false" },
+            new { order = 8, name = "seedCriteria.seedTime", label = "Seed Time", helpText = "The time a torrent should be seeded before stopping", helpLink = (string?)null, value = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeedTime ?? (int?)null) : null, type = "number", advanced = true, hidden = "false" },
+            new { order = 9, name = "seedCriteria.seasonPackSeedTime", label = "Season Pack Seed Time", helpText = "The time a season pack torrent should be seeded", helpLink = (string?)null, value = indexer.Type == IndexerType.Torznab ? (int?)(indexer.SeasonPackSeedTime ?? (int?)null) : null, type = "number", advanced = true, hidden = "false" },
             new { order = 10, name = "rejectBlocklistedTorrentHashesWhileGrabbing", label = "Reject Blocklisted Torrent Hashes While Grabbing", helpText = "If a torrent is blocked, also reject releases with the same torrent hash", helpLink = (string?)null, value = indexer.RejectBlocklistedTorrentHashes, type = "checkbox", advanced = true, hidden = "false" },
             new { order = 11, name = "additionalParameters", label = "Additional Parameters", helpText = "Additional Torznab/Newznab parameters", helpLink = (string?)null, value = indexer.AdditionalParameters ?? "", type = "textbox", advanced = true, hidden = "false" }
         },
