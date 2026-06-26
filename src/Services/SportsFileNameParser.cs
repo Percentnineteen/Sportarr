@@ -458,7 +458,7 @@ public class SportsFileNameParser
     };
 
     // Date extraction patterns
-    private static readonly Regex DatePattern = new(@"(?<year>\d{4})[\.\-\s]+(?<month>\d{2})[\.\-\s]+(?<day>\d{2})", RegexOptions.Compiled);
+    private static readonly Regex DatePattern = new Regex( @"(?<date>(?:\d{4}[.\-\s]+\d{2}[.\-\s]+\d{2}|\d{2}[.\-\s]+\d{2}[.\-\s]+\d{4}))", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex YearOnlyPattern = new(@"\b(?<year>20[12]\d)\b", RegexOptions.Compiled);
     // Season span pattern for multi-year seasons like "2025-2026" or "2025-26"
     private static readonly Regex SeasonSpanPattern = new(@"\b(?<startYear>20[12]\d)[\-/](?<endYear>20[12]\d|[12]\d)\b", RegexOptions.Compiled);
@@ -543,21 +543,42 @@ public class SportsFileNameParser
         var dateMatch = DatePattern.Match(cleanName);
         if (dateMatch.Success)
         {
-            if (int.TryParse(dateMatch.Groups["year"].Value, out var year) &&
-                int.TryParse(dateMatch.Groups["month"].Value, out var month) &&
-                int.TryParse(dateMatch.Groups["day"].Value, out var day))
+            var dateText = dateMatch.Groups["date"].Value;
+            var parts = Regex.Split(dateText, @"[.\-\s]+");
+            try
             {
-                try
-                {
-                    result.EventDate = new DateTime(year, month, day);
-                    _logger.LogDebug("[SportsFileNameParser] Extracted date {Date} from '{Filename}'",
-                        result.EventDate.Value.ToString("yyyy-MM-dd"), filename);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning("[SportsFileNameParser] Invalid date {Year}-{Month}-{Day} in '{Filename}': {Error}",
-                        year, month, day, filename, ex.Message);
-                }
+              int year;
+              int month;
+              int day;
+              if (parts[0].Length == 4)
+              {
+                // yyyy MM dd
+                year = int.Parse(parts[0]);
+                month = int.Parse(parts[1]);
+                day = int.Parse(parts[2]);
+              }
+              else
+              {
+                // dd MM yyyy
+                day = int.Parse(parts[0]);
+                month = int.Parse(parts[1]);
+                year = int.Parse(parts[2]);
+              }
+
+              result.EventDate = new DateTime(year, month, day);
+
+              _logger.LogDebug(
+                  "[SportsFileNameParser] Extracted date {Date} from '{Filename}'",
+                  result.EventDate.Value.ToString("yyyy-MM-dd"),
+                  filename);
+            }
+            catch (Exception ex)
+            {
+              _logger.LogWarning(
+                  "[SportsFileNameParser] Invalid date '{Date}' in '{Filename}': {Error}",
+                  dateText,
+                  filename,
+                  ex.Message);
             }
         }
         else
