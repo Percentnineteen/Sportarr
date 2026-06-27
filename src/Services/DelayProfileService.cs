@@ -235,7 +235,7 @@ public class DelayProfileService
         //    For usenet: Age (newer = better)
         // 5. Size (smaller = better, as tiebreaker)
         var prioritized = qualityFiltered
-            .OrderByDescending(r => ReleaseEvaluator.CalculateQualityScoreFromName(r.Quality))
+            .OrderByDescending(r => ReleaseEvaluator.CalculateQualityScoreFromName(r.Quality) + r.CustomFormatScore)
             .ThenByDescending(r => r.CustomFormatScore)
             .ThenByDescending(r => r.Protocol == profile.PreferredProtocol ? 1 : 0)
             .ThenByDescending(r => r.Protocol == "Torrent"
